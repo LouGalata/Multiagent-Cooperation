@@ -1,49 +1,43 @@
 import argparse
+import os
+import random
 import sys
+
 import numpy as np
-from scipy.spatial import cKDTree
-from scipy.sparse import csr_matrix
-from spektral.layers import GCNConv
-
-from experiments.replay_buffer import ReplayBuffer
+import tensorflow as tf
+from keras.layers import Input, Lambda, Dense, Dropout
 from keras.models import Model
-from keras.layers import Input, Dropout, Dense, Flatten
-
-from keras.utils import to_categorical
+from scipy.sparse import csr_matrix
+from scipy.spatial import cKDTree
+from spektral.layers import GCNConv
+from tensorboard.plugins.hparams import api as hp
 from tensorflow.keras import Sequential
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import TensorBoard, EarlyStopping
-import tensorflow as tf
-from tensorflow.keras.regularizers import l2
+from experiments.replay_buffer import ReplayBuffer
 
-from collections import Counter
-from sklearn.manifold import TSNE
-import matplotlib.pyplot as plt
-
-
-np.set_printoptions(threshold=sys.maxsize)
 def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
-    parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
-    parser.add_argument("--num-episodes", type=int, default=60000, help="number of episodes")
-    parser.add_argument("--good-policy", type=str, default="maddpg", help="policy for good agents")
-    parser.add_argument("--adv-policy", type=str, default="maddpg", help="policy of adversaries")
+    parser.add_argument("--max-episode-len", type=int, default=100, help="maximum episode length")
+    parser.add_argument("--num-episodes", type=int, default=10000, help="number of episodes")
+    parser.add_argument("--episode-before-train", type=int, default=200, help="number of episodes before train")
 
     # Experince Replay
-    parser.add_argument("--max-buffer-size", type=int, default=200000, help="maximum buffer capacity")
+    parser.add_argument("--max-buffer-size", type=int, default=20000, help="maximum buffer capacity")
 
-    # Core training parameters
-    parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
+    # Core training parameters  -- Passed through hparams
+    # parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
+    # parser.add_argument("--batch-size", type=int, default=1, help="number of episodes to optimize at the same time")
+    # parser.add_argument("--dropout-rate", type=float, default=0.05, help="dropout rate in the gcn")
+
+    # GCN training parameters -- Passed through hparams
+    # parser.add_argument("--num-neurons1", type=int, default=24, help="number of neurons on the first gcn")
+    # parser.add_argument("--num-neurons2", type=int, default=24, help="number of neurons on the second gcn")
+
+    # Q-learning training parameters
     parser.add_argument("--gamma", type=float, default=0.95, help="discount factor")
-    parser.add_argument("--batch-size", type=int, default=1024, help="number of episodes to optimize at the same time")
-    parser.add_argument("--num-units", type=int, default=64, help="number of units in the mlp")
-    parser.add_argument("--dropout-rate", type=float, default=0.05, help="dropout rate in the gcn")
-
-    # GCN training parameters
-    parser.add_argument("--num-neurons1", type=int, default=24, help="number of neurons on the first gcn")
-    parser.add_argument("--num-neurons2", type=int, default=24, help="number of neurons on the second gcn")
+    parser.add_argument("--tau", type=float, default=0.01, help="smooth weights copy to target model")
 
     # Checkpointing
     parser.add_argument("--exp-name", type=str, default=None, help="name of the experiment")
@@ -68,7 +62,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def make_env(scenario_name, arglist, benchmark=False):
+def make_env(scenario_name, benchmark=False):
     from multiagent.environment import MultiAgentEnv
     import multiagent.scenarios as scenarios
 
@@ -85,9 +79,25 @@ def make_env(scenario_name, arglist, benchmark=False):
     return env
 
 
-
 def all_equal2(iterator):
     return len(set(iterator)) <= 1
+
+
+def __get_callbacks(logdir, hparams):
+    callbacks = [tf.keras.callbacks.TerminateOnNaN(),
+                 tf.keras.callbacks.TensorBoard(logdir,
+                                                update_freq='epoch',
+                                                write_graph=False,
+                                                histogram_freq=5),
+
+                 hp.KerasCallback(logdir, hparams, trial_id=logdir),
+                 tf.keras.callbacks.ModelCheckpoint(
+                     filepath=os.path.join(logdir, "cp.ckpt"),
+                     save_best_only=True,
+                     monitor='epoch_loss',
+                     verbose=1)
+                 ]
+    return callbacks
 
 
 def get_adj(arr, k=3):
@@ -119,105 +129,254 @@ def get_adj(arr, k=3):
     return adj
 
 
-def Q_Net(action_dim, input_dim):
-    I1 = Input(shape=(1, input_dim))
-    h1 = Flatten()(I1)
-    V = Dense(input_dim, kernel_initializer='random_normal', activation='relu')(h1)
-    V = Dense(action_dim, kernel_initializer='random_normal', activation='softmax')(V)
-    model = Model(I1, V)
-    model._name = "Qnet"
-    model.summary()
-    return model
+def GCN_net(n_neurons_1=None, n_neurons_2=None, dropout=None):
+    I1 = Input(shape=(feature_dim,), name="gcn_input")
+    Adj = Input((no_agents,), sparse=True, name="adj")
 
+    encoder = GCNConv(channels=n_neurons_1, activation='relu', name="Encoder")([I1, Adj])
+    decoder = GCNConv(channels=n_neurons_2, activation='relu', name="Decoder")([encoder, Adj])
 
-def GCN_net(feature_dim=None, node_dim=None, n_neurons_1=None, n_neurons_2=None):
-    I1 = Input(shape=(feature_dim, ))
-    Adj = Input((node_dim, ), sparse=True)
+    q_net_input = tf.expand_dims(decoder, axis=0)
+    output = []
+    for j in list(range(no_agents)):
+        T = Lambda(lambda x: x[:, j], output_shape=(1, n_neurons_2,), name="lambda_layer_agent_%d" % j)(
+            q_net_input)
+        V1 = Dense(n_neurons_2, kernel_initializer='random_normal', activation='relu', name="FirstDense_agent_%d" % j)(
+            T)
+        # Drop = Dropout(dropout, name="FirstDense_agent_%d" % j)(V1),
+        V = Dense(num_actions, kernel_initializer='random_normal', activation='softmax',
+                  name="SecondDense_agent_%d" % j)(V1)
+        output.append(V)
 
-    encoder = GCNConv(channels=n_neurons_1, activation='relu')([I1, Adj])
-    decoder = GCNConv(channels=n_neurons_2, activation='relu')([encoder, Adj])
-
-    model = Model([I1, Adj], decoder)
-    model._name = "graph_network"
+    model = Model([I1, Adj], output)
+    model._name = "final_network"
     # model.summary()
+    # tf.keras.utils.plot_model(model, show_shapes=True)
     return model
 
 
-
-
-def get_embeddings(graph, adj, gcn_net):
+def get_actions(graph, adj, gcn_net):
     A = GCNConv.preprocess(adj).astype('f4')
     preds = gcn_net.predict([graph, A])
     return preds
 
 
-def get_actions(embedding, q_net):
-    tf_embeddings = tf.expand_dims(embedding, axis=0)
-    tf_embeddings = tf.expand_dims(tf_embeddings, axis=0)
-    action = q_net.predict([tf_embeddings])
-    return action
+def get_actions_egreedy(predictions, epsilon=None):
+    """
+    Return a random action with probability epsilon and the max with probability 1 - epsilon for each agent
+    """
+    return [random.randrange(num_actions) if np.random.rand() < epsilon else np.argmax(prediction) for prediction in
+            predictions]
+
+def __get_model(n_neurons_1=None, n_neurons_2=None, dropout=None):
+    return GCN_net(n_neurons_1, n_neurons_2, dropout)
+
+def __build_configurations():
+    configurations = []
+    for dr in HP_DROPOUT.domain.values:
+        for hu in HP_HIDDEN_UNITS.domain.values:
+            for lr in HP_LEARNING_RATE.domain.values:
+                for bs in HP_BATCH_SIZE.domain.values:
+                    for gamma in HP_GAMMA.domain.values:
+                        for cg in HP_CLIP_GRADIENT.domain.values:
+                            new = [dr, hu, lr, bs, gamma, cg]
+                            configurations.append(new)
+    return configurations
+
+def __build_conf(dropout, hidden_units, learning_rate, batch_size, gamma, clip_gradient):
+    # Configure logging
+    hparams_log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'logs'))
+    logdir = os.path.join(hparams_log_dir, "dr=%s-hu=%d-lr=%s-bs=%d-gamma=%s-cg=%s" %
+                          (dropout, hidden_units, learning_rate, batch_size, gamma,clip_gradient))
 
 
-def get_replay_buffer(agent_idx):
-    replay_buffer = ReplayBuffer(arglist.max_buffer_size)
-    max_replay_buffer_len = arglist.batch_size * arglist.max_episode_len
-    replay_sample_index = None
+    if os.path.exists(logdir):
+        print("Ignoring run %s" % logdir)
+        return None, None, None
+
+    model = __get_model(n_neurons_1=hidden_units, n_neurons_2=hidden_units, dropout=dropout)
+    model_t = __get_model(n_neurons_1=hidden_units, n_neurons_2=hidden_units, dropout=dropout)
+
+    if clip_gradient:
+        model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate, clipnorm=1.0, clipvalue=0.5),
+                      loss=tf.keras.losses.MeanSquaredError(),
+                      metrics=[METRICS]
+                      )
+        model_t.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate, clipnorm=1.0, clipvalue=0.5),
+                      loss=tf.keras.losses.MeanSquaredError(),
+                      metrics=[METRICS]
+                      )
+    else:
+        model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
+                      loss=tf.keras.losses.MeanSquaredError(),
+                      metrics=[METRICS]
+                      )
+        model_t.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
+                      loss=tf.keras.losses.MeanSquaredError(),
+                      metrics=[METRICS]
+                      )
+
+    with tf.summary.create_file_writer(hparams_log_dir).as_default():
+        hp.hparams_config(
+            hparams=[HP_HIDDEN_UNITS, HP_DROPOUT, HP_LEARNING_RATE, HP_BATCH_SIZE, HP_GAMMA],
+            metrics=[
+                hp.Metric('epoch_loss', group="train", display_name='epoch_loss'),
+                hp.Metric('mape', group="train", display_name='mape'),
+                hp.Metric('mae', group="train", display_name='mae'),
+                hp.Metric('rmse', group="train", display_name='rmse'),
+                hp.Metric('epoch_mape', group="train", display_name='mape'),
+                hp.Metric('epoch_mae', group="train", display_name='mae'),
+                hp.Metric('epoch_rmse', group="train", display_name='rmse')
+            ],
+        )
+
+    hparams = {
+        HP_DROPOUT: dropout,
+        HP_HIDDEN_UNITS: hidden_units,
+        HP_LEARNING_RATE: learning_rate,
+        HP_BATCH_SIZE: batch_size,
+        HP_GAMMA: gamma,
+        HP_CLIP_GRADIENT: clip_gradient
+    }
+    callbacks = __get_callbacks(logdir, hparams)
+
+    return model, model_t, callbacks
 
 
 def main(arglist):
+    # Global variables
+    global num_actions, feature_dim, no_agents
     # Create environment
-    env = make_env(arglist.scenario, arglist, arglist.benchmark)
+    env = make_env(arglist.scenario, arglist.benchmark)
     env.discrete_action_input = True
 
-    # Create experience buffer
-
-
     obs_shape_n = env.observation_space
-
+    no_agents = env.n
     # The last 2* (n-1) positions are the communication channel (not used)
     # The next 2* (n-1) positions are the relative positions of other agents. (Not used)
-
-    N = len(obs_shape_n)  # the number of nodes
     num_features = obs_shape_n[0].shape[0]
-    F = num_features - (env.n - 1) * 4  # the size of node features
+    num_actions = env.action_space[0].n
+    feature_dim = num_features - (env.n - 1) * 4  # the size of node features
 
-    gcn_net = GCN_net(feature_dim=F,
-                      node_dim=N,
-                      n_neurons_1=arglist.num_neurons1,
-                      n_neurons_2=arglist.num_neurons2)
+    configurations = __build_configurations()
+    for configuration in configurations:
+        model, model_t, callback = __build_conf(*configuration)
+        _, _, _, batch_size, gamma, _ = configuration
+        if model is None:
+            continue
 
-    q_net = Q_Net(action_dim=env.action_space[0].n, input_dim=arglist.num_neurons2)
+        ###########playing#############
+        i_episode = 0
+        replay_buffer = ReplayBuffer(arglist.max_buffer_size)
+        epsilon = 1.0
+        while i_episode < arglist.num_episodes:
+            i_episode += 1
+            epsilon *= 0.996
+            if epsilon < 0.01: alpha = 0.01
+            print(i_episode)
+            obs_n = env.reset()
+            score = 0
+            steps = 0
+            loss = 0
+            while steps < arglist.max_episode_len:
+                steps += 1
 
-    # model._name = "final_architecture"
-    # model.summary()
-    # Parameters
-    alpha = arglist.lr
+                obs_n = [x[:(num_features - (env.n - 1) * 4)] for x in obs_n]
+                adj = get_adj(obs_n)
+                predictions = get_actions(np.array(obs_n), adj, model)
+                actions = get_actions_egreedy(predictions, epsilon=epsilon)
+                # Observe next state, reward and done value
+                new_obs_n, rew_n, done_n, _ = env.step(actions)
+                new_obs_n = [x[:(num_features - (env.n - 1) * 4)] for x in new_obs_n]
 
-    ###########playing#############
-    i_episode = 0
+                # Store the data in the replay memory
+                replay_buffer.add(obs_n, adj, actions, rew_n, new_obs_n, done_n)
 
-    while i_episode < arglist.max_episode_len:
-        alpha *= 0.996
-        if alpha < 0.01:
-            alpha = 0.01
-        print(i_episode)
-        i_episode = i_episode + 1
-        obs_n = env.reset()
-        obs_n = [x[:(num_features - (env.n - 1) * 4)] for x in obs_n]
-        adj = get_adj(obs_n)
-        # action_n = [agent.action(obs) for agent, obs in zip(trainers, obs_n)]
-        # Retrieve agents actions
-        node_embeddings = get_embeddings(np.array(obs_n), adj, gcn_net)
-        predictions = [get_actions(np.array(node_embedding), q_net) for node_embedding in node_embeddings.tolist()]
-        actions = [np.argmax(prediction) for prediction in predictions]
-        new_obs_n, rew_n, done_n, info_n = env.step(actions)
+                score += sum(rew_n)
+                if (i_episode - 1) % 10 == 0:
+                    env.render()
 
-        i_episode += 1
-        steps = 0
-        while steps < arglist.num_episodes:
-            steps += 1
+                if arglist.num_episodes == steps:
+                    print(score, end='\t')
+
+                if i_episode < arglist.episode_before_train:
+                    continue
+
+                # Pass a batch of states through the policy network to calculate the Q(s, a)
+                # Pass a batch of states through the target network to calculate the Q'(s', a)
+                batch = replay_buffer.sample(batch_size)
+                obs_n, adj_n, actions, rew_n, new_obs_n, done_n = [], [], [], [], [], []
+                # for e in batch:
+                for e in range(batch_size):
+                    obs_n.append(batch[0][e])
+                    new_obs_n.append(batch[4][e])
+                    GCNConv.preprocess(batch[1][e]).astype('f4')
+                    adj_n.append(batch[1][e])
+                    actions.append(batch[2][e])
+                    rew_n.append(batch[3][e])
+                    done_n.append(batch[5][e])
+
+                actions = np.asarray(actions)
+                rewards = np.asarray(rew_n)
+                dones = np.asarray(done_n)
+
+                actions = np.asarray(actions)
+                rewards = np.asarray(rew_n)
+                dones = np.asarray(done_n)
+                for j in range(env.n):
+                    obs_n[j] = np.asarray(obs_n[j])
+                    adj_n[j] = np.array(adj_n[j])
+                    new_obs_n[j] = np.asarray(new_obs_n[j])
+
+
+                # Calculate TD-target
+                q_values = model.predict([adj_n, obs_n])
+                target_q_values = model_t.predict([adj_n, obs_n])
+
+                for k in range(len(batch)):
+                    if dones[k]:
+                        for j in range(no_agents):
+                            q_values[j][k][actions[k][j]] = rewards[k][j]
+                    else:
+                        for j in range(no_agents):
+                            q_values[j][k][actions[k][j]] = rewards[k][j] + HP_GAMMA * np.max(target_q_values[j][k])
+                history = model.fit(obs_n, q_values, epochs=1, batch_size=batch_size, verbose=1, callbacks=callback)
+
+                #### <!---------????
+                his = 0
+                for (k, v) in history.history.items():
+                    his += v[0]
+                loss += (his / 20)
+                #### ---------> ????
+
+                # train target model
+                weights = model.get_weights()
+                target_weights = model_t.get_weights()
+
+                for w in range(len(weights)):
+                    target_weights[w] = arglist.tau * weights[w] + (1 - arglist.tau) * target_weights[w]
+                model_t.set_weights(target_weights)
+
+            #######save model###############
+            model.save('model.h5')
 
 
 if __name__ == '__main__':
+    np.set_printoptions(threshold=sys.maxsize)
+    # Set hyper parameter search
+    HP_HIDDEN_UNITS = hp.HParam('hidden_units', hp.Discrete([24]))
+    HP_DROPOUT = hp.HParam('dropout', hp.Discrete([0.0, 0.1]))
+    HP_LEARNING_RATE = hp.HParam('learning_rate', hp.Discrete([0.001, 0.0001]))
+    HP_BATCH_SIZE = hp.HParam('batch_size', hp.Discrete([1, 124]))
+    HP_CLIP_GRADIENT = hp.HParam('clip_gradient', hp.Discrete([False]))
+    HP_GAMMA = hp.HParam('gamma', hp.Discrete([0.95, 0.98]))
+
+    # Define metrics to watch
+    METRICS = [
+        tf.keras.metrics.MeanAbsoluteError(name='mae'),
+        tf.keras.metrics.RootMeanSquaredError(name='rmse'),
+        tf.keras.metrics.MeanAbsolutePercentageError(name='mape')
+    ]
+
     arglist = parse_args()
     main(arglist)
