@@ -17,7 +17,7 @@ from spektral.layers import GCNConv
 from tensorflow.keras import Sequential
 # import keras.backend as K
 
-from experiments.replay_buffer import ReplayBuffer
+from replay_buffer import ReplayBuffer
 
 
 def parse_args():
@@ -67,7 +67,6 @@ def parse_args():
 def to_tensor(arg):
     arg = tf.convert_to_tensor(arg)
     return arg
-
 
 
 def make_env(scenario_name, benchmark=False):
@@ -153,7 +152,7 @@ def GCN_net(n_neurons=None, batch_size=None):
     output = []
     dense = Dense(n_neurons, kernel_initializer='random_normal', activation='softmax', name="dense_layer")
     for j in list(range(no_agents)):
-        T = Lambda(lambda x: x[:, j], output_shape=(n_neurons, ), name="lambda_layer_agent_%d" % j)(
+        T = Lambda(lambda x: x[:, j], output_shape=(n_neurons,), name="lambda_layer_agent_%d" % j)(
             decoder)
         V = dense(T)
         output.append(V)
@@ -163,7 +162,7 @@ def GCN_net(n_neurons=None, batch_size=None):
     # output = Concatenate()(output)
     # vdn_model =
     # model.summary()
-    tf.keras.utils.plot_model(model, show_shapes=True)
+    # tf.keras.utils.plot_model(model, show_shapes=True)
     return model
 
 
@@ -187,7 +186,6 @@ def __build_conf():
     hparams_log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'logs'))
     logdir = os.path.join(hparams_log_dir, "hidden-untis=%d-batch-size=%d" %
                           (arglist.num_neurons, arglist.batch_size))
-
 
     model = GCN_net(n_neurons=arglist.num_neurons, batch_size=arglist.batch_size)
     model_t = GCN_net(n_neurons=arglist.num_neurons, batch_size=arglist.batch_size)
@@ -222,6 +220,10 @@ def main(arglist):
     num_actions = env.action_space[0].n
     feature_dim = num_features - (env.n - 1) * 4  # the size of node features
     model, model_t, callback = __build_conf()
+    reward_per_episode = pd.DataFrame(columns=['mean-reward'])
+    agents_rewards = dict()
+    for i in range(no_agents):
+        reward_per_episode["agent_%d" % i] = ""
 
     #### Fill Buffer
     replay_buffer = ReplayBuffer(arglist.max_buffer_size)
@@ -230,10 +232,9 @@ def main(arglist):
     i_episode = 0
     epsilon = 1.0
 
-    obs_n = env.reset()
-    obs_n = [x[:(num_features - (env.n - 1) * 4)] for x in obs_n]
-
     # Normalize input
+    # obs_n = env.reset()
+    # obs_n = [x[:(num_features - (env.n - 1) * 4)] for x in obs_n]
     # observations = []
     # for i in range(100):
     #     observations.extend([x for x in obs_n])
@@ -247,7 +248,6 @@ def main(arglist):
     #
     # scaler = StandardScaler().fit(observations)
 
-
     while i_episode < arglist.num_episodes:
         i_episode += 1
         epsilon *= 0.996
@@ -257,7 +257,10 @@ def main(arglist):
         obs_n = [x[:(num_features - (env.n - 1) * 4)] for x in obs_n]
 
         # obs_n = scaler.transform(obs_n)
+        for i in range(no_agents):
+            agents_rewards["agent_%d" % i] = 0
         steps = 0
+        sum_reward = 0
         while steps < arglist.max_episode_len:
             steps += 1
             adj = get_adj(obs_n)
@@ -270,7 +273,9 @@ def main(arglist):
             # Store the data in the replay memory
             replay_buffer.add(obs_n, adj, actions, rew_n, new_obs_n, done_n)
             obs_n = new_obs_n
-
+            sum_reward += sum(rew_n)
+            for i in range(no_agents):
+                agents_rewards["agent_%d" % i] += rew_n[i]
             if not replay_buffer.can_provide_sample(batch_size):
                 continue
 
@@ -314,18 +319,19 @@ def main(arglist):
                     target_weights[w] = arglist.tau * weights[w] + (1 - arglist.tau) * target_weights[w]
                 model_t.set_weights(target_weights)
 
-        #######save model###############
-        model.save('model.h5')
+        # Save metrics
+        mean_reward = sum_reward / steps
+        agents_rewards /= steps
+        data = {'mean-reward': mean_reward}
+        for i in range(no_agents):
+            data.update({'agent_%d' % i: agents_rewards[i]})
+        reward_per_episode = reward_per_episode.append(data,  ignore_index=True)
+    result_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'results'))
+    result_path = result_path + '{}.csv'.format('reward_per_episode')
+    reward_per_episode.to_csv(result_path)
 
 
 if __name__ == '__main__':
     np.set_printoptions(threshold=sys.maxsize)
-    # # Define metrics to watch
-    # METRICS = [
-    #     tf.keras.metrics.MeanAbsoluteError(name='mae'),
-    #     tf.keras.metrics.RootMeanSquaredError(name='rmse'),
-    #     tf.keras.metrics.MeanAbsolutePercentageError(name='mape')
-    # ]
-
     arglist = parse_args()
     main(arglist)
