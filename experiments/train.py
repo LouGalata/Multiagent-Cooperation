@@ -305,7 +305,8 @@ def main(arglist):
 
         # Save metrics
         mean_reward = sum_reward / steps
-        agents_rewards /= steps
+        for key, value in agents_rewards.items():
+            agents_rewards[key] = value / steps
         data = {'mean-reward': mean_reward}
         for i in range(no_agents):
             data.update({'agent_%d' % i: agents_rewards[i]})
