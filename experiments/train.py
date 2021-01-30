@@ -41,26 +41,6 @@ def parse_args():
     parser.add_argument("--gamma", type=float, default=0.95, help="discount factor")
     parser.add_argument("--tau", type=float, default=0.01, help="smooth weights copy to target model")
 
-    # Checkpointing
-    parser.add_argument("--exp-name", type=str, default=None, help="name of the experiment")
-    parser.add_argument("--save-dir", type=str, default="/tmp/policy/",
-                        help="directory in which training state and model should be saved")
-    parser.add_argument("--save-rate", type=int, default=1000,
-                        help="save model once every time this many episodes are completed")
-    parser.add_argument("--load-dir", type=str, default="",
-                        help="directory in which training state and model are loaded")
-
-    # Evaluation
-    parser.add_argument("--restore", action="store_true", default=False)
-    parser.add_argument("--display", action="store_true", default=False)
-
-    # benchmark: provides diagnostic data for policies trained on the environment
-    parser.add_argument("--benchmark", action="store_true", default=False)
-    parser.add_argument("--benchmark-iters", type=int, default=100000, help="number of iterations run for benchmarking")
-    parser.add_argument("--benchmark-dir", type=str, default="./benchmark_files/",
-                        help="directory where benchmark data is saved")
-    parser.add_argument("--plots-dir", type=str, default="./learning_curves/",
-                        help="directory where plot data is saved")
     return parser.parse_args()
 
 
@@ -146,11 +126,11 @@ def GCN_net(n_neurons=None, batch_size=None):
     # Adj = Input((no_agents,), sparse=True, batch_size=batch_size, name="adj")
     Adj = Input(shape=(no_agents, no_agents), name="adj")
 
-    encoder = GCNConv(channels=n_neurons, activation='relu', name="Encoder")([I1, Adj])
-    decoder = GCNConv(channels=n_neurons, activation='relu', name="Decoder")([encoder, Adj])
+    encoder = GCNConv(channels=n_neurons, activation='relu', kernel_initializer=tf.keras.initializers.he_normal, name="Encoder")([I1, Adj])
+    decoder = GCNConv(channels=n_neurons, activation='relu', kernel_initializer=tf.keras.initializers.he_normal, name="Decoder")([encoder, Adj])
     # q_net_input = tf.expand_dims(decoder, axis=0)
     output = []
-    dense = Dense(n_neurons, kernel_initializer='random_normal', activation='softmax', name="dense_layer")
+    dense = Dense(n_neurons, kernel_initializer=tf.keras.initializers.he_normal, activation='softmax', name="dense_layer")
     for j in list(range(no_agents)):
         T = Lambda(lambda x: x[:, j], output_shape=(n_neurons,), name="lambda_layer_agent_%d" % j)(
             decoder)
@@ -320,8 +300,9 @@ def main(arglist):
                 model_t.set_weights(target_weights)
 
         # Save metrics
+        for key, val in agents_rewards.items():
+            agents_rewards[key] = val / steps
         mean_reward = sum_reward / steps
-        agents_rewards /= steps
         data = {'mean-reward': mean_reward}
         for i in range(no_agents):
             data.update({'agent_%d' % i: agents_rewards[i]})
