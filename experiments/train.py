@@ -24,18 +24,18 @@ def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
-    parser.add_argument("--max-episode-len", type=int, default=300, help="maximum episode length")
-    parser.add_argument("--num-episodes", type=int, default=100000, help="number of episodes")
+    parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
+    parser.add_argument("--num-episodes", type=int, default=60000, help="number of episodes")
 
-    # Experince Replay
+    # Experience Replay
     parser.add_argument("--max-buffer-size", type=int, default=20000, help="maximum buffer capacity")
 
-    # Core training parameters  -- Passed through hparams
+    # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
-    parser.add_argument("--batch-size", type=int, default=24, help="number of episodes to optimize at the same time")
+    parser.add_argument("--batch-size", type=int, default=1024, help="number of episodes to optimize at the same time")
 
-    # GCN training parameters -- Passed through hparams
-    parser.add_argument("--num-neurons", type=int, default=24, help="number of neurons on the first gcn")
+    # GCN training parameters
+    parser.add_argument("--num-neurons", type=int, default=64, help="number of neurons on the first gcn")
 
     # Q-learning training parameters
     parser.add_argument("--gamma", type=float, default=0.95, help="discount factor")
@@ -126,11 +126,11 @@ def GCN_net(n_neurons=None, batch_size=None):
     # Adj = Input((no_agents,), sparse=True, batch_size=batch_size, name="adj")
     Adj = Input(shape=(no_agents, no_agents), name="adj")
 
-    encoder = GCNConv(channels=n_neurons, activation='relu', kernel_initializer=tf.keras.initializers.he_normal, name="Encoder")([I1, Adj])
-    decoder = GCNConv(channels=n_neurons, activation='relu', kernel_initializer=tf.keras.initializers.he_normal, name="Decoder")([encoder, Adj])
+    encoder = GCNConv(channels=n_neurons, activation='relu', kernel_initializer=tf.keras.initializers.he_normal(), name="Encoder")([I1, Adj])
+    decoder = GCNConv(channels=n_neurons, activation='relu', kernel_initializer=tf.keras.initializers.he_normal(), name="Decoder")([encoder, Adj])
     # q_net_input = tf.expand_dims(decoder, axis=0)
     output = []
-    dense = Dense(n_neurons, kernel_initializer=tf.keras.initializers.he_normal, activation='softmax', name="dense_layer")
+    dense = Dense(n_neurons, kernel_initializer=tf.keras.initializers.he_normal(), activation='softmax', name="dense_layer")
     for j in list(range(no_agents)):
         T = Lambda(lambda x: x[:, j], output_shape=(n_neurons,), name="lambda_layer_agent_%d" % j)(
             decoder)
@@ -188,7 +188,7 @@ def main(arglist):
     # Global variables
     global num_actions, feature_dim, no_agents
     # Create environment
-    env = make_env(arglist.scenario, arglist.benchmark)
+    env = make_env(arglist.scenario)
     env.discrete_action_input = True
 
     obs_shape_n = env.observation_space
@@ -287,10 +287,10 @@ def main(arglist):
                     if dones[k][j]:
                         q_values[j][k][actions[k][j]] = rewards[k][j]
                     else:
-                        q_values[k][j][actions[k][j]] = rewards[k][j] + arglist.gamma * np.max(target_q_values[j][k])
-            model.fit([state, adj_n], q_values, epochs=50, batch_size=batch_size, verbose=1, callbacks=callback)
+                        q_values[j][k][actions[k][j]] = rewards[k][j] + arglist.gamma * np.max(target_q_values[j][k])
+            model.fit([state, adj_n], q_values, epochs=1, batch_size=batch_size, verbose=1, callbacks=callback)
 
-            if steps % 100 == 0:
+            if steps % 20 == 0:
                 # train target model
                 weights = model.get_weights()
                 target_weights = model_t.get_weights()
@@ -302,13 +302,11 @@ def main(arglist):
         # Save metrics
         for key, val in agents_rewards.items():
             agents_rewards[key] = val / steps
-        mean_reward = sum_reward / steps
-        data = {'mean-reward': mean_reward}
-        for i in range(no_agents):
-            data.update({'agent_%d' % i: agents_rewards[i]})
-        reward_per_episode = reward_per_episode.append(data,  ignore_index=True)
+        total_reward = sum_reward / steps
+        agents_rewards['total-reward'] = total_reward
+        reward_per_episode = reward_per_episode.append(agents_rewards,  ignore_index=True)
     result_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'results'))
-    result_path = result_path + '{}.csv'.format('reward_per_episode')
+    result_path = result_path + '/{}.csv'.format('reward_per_episode')
     reward_per_episode.to_csv(result_path)
 
 
