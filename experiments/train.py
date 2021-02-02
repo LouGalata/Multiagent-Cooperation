@@ -2,22 +2,20 @@ import argparse
 import os
 import random
 import sys
-import pandas as pd
-import numpy as np
-import seaborn as sns
-from matplotlib import pyplot as plt
-from sklearn.preprocessing import StandardScaler
 
+import numpy as np
+import pandas as pd
 import tensorflow as tf
-from keras.layers import Input, Lambda, Dense, Concatenate
+from keras.layers import Input, Lambda, Dense
 from keras.models import Model
 from scipy.sparse import csr_matrix
 from scipy.spatial import cKDTree
 from spektral.layers import GCNConv
+from spektral.transforms import normalize_one
 from tensorflow.keras import Sequential
-# import keras.backend as K
 
 from replay_buffer import ReplayBuffer
+import keras.backend as K
 
 
 def parse_args():
@@ -25,14 +23,16 @@ def parse_args():
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
-    parser.add_argument("--num-episodes", type=int, default=60000, help="number of episodes")
+    # parser.add_argument("--num-episodes", type=int, default=60000, help="number of episodes")
+    parser.add_argument("--num-episodes", type=int, default=10000, help="number of episodes")
 
     # Experience Replay
     parser.add_argument("--max-buffer-size", type=int, default=20000, help="maximum buffer capacity")
 
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
-    parser.add_argument("--batch-size", type=int, default=1024, help="number of episodes to optimize at the same time")
+    # parser.add_argument("--batch-size", type=int, default=1024, help="number of episodes to optimize at the same time")
+    parser.add_argument("--batch-size", type=int, default=200, help="number of episodes to optimize at the same time")
 
     # GCN training parameters
     parser.add_argument("--num-neurons", type=int, default=64, help="number of neurons on the first gcn")
@@ -74,22 +74,19 @@ def __get_callbacks(logdir):
     callbacks = [tf.keras.callbacks.TerminateOnNaN(),
                  tf.keras.callbacks.EarlyStopping(monitor='loss',
                                                   patience=5),
-                 tf.keras.callbacks.TensorBoard(logdir,
-                                                update_freq='epoch',
-                                                write_graph=False,
-                                                histogram_freq=5),
+                 tf.keras.callbacks.TensorBoard(logdir, update_freq="epoch", profile_batch=0),
 
                  tf.keras.callbacks.ModelCheckpoint(
                      filepath=os.path.join(logdir, "cp.ckpt"),
                      save_best_only=True,
                      save_weights_only=False,
                      monitor='loss',
-                     verbose=1)
+                     verbose=0)
                  ]
     return callbacks
 
 
-def get_adj(arr, k=3):
+def get_adj(arr, k=2):
     """
     Take as input the new obs. In position 2 to k, there are the x and y coordinates of each agent
     Make an adjacency matrix, where each agent communicates with the k closest ones
@@ -116,26 +113,32 @@ def get_adj(arr, k=3):
     # Use a sparce matrix
     adj = csr_matrix((data, (x_idx, y_idx)), shape=(length, length))
     dense = np.array(adj.todense())
+    # add self-loops and symmetric normalization
     adj = GCNConv.preprocess(dense).astype('f4')
     # Batch Mode needs dense inputs
     return adj
 
 
-def GCN_net(n_neurons=None, batch_size=None):
+def GCN_net(n_neurons=None):
     I1 = Input(shape=(no_agents, feature_dim), name="gcn_input")
     # Adj = Input((no_agents,), sparse=True, batch_size=batch_size, name="adj")
     Adj = Input(shape=(no_agents, no_agents), name="adj")
 
-    encoder = GCNConv(channels=n_neurons, activation='relu', kernel_initializer=tf.keras.initializers.he_normal(), name="Encoder")([I1, Adj])
-    decoder = GCNConv(channels=n_neurons, activation='relu', kernel_initializer=tf.keras.initializers.he_normal(), name="Decoder")([encoder, Adj])
-    # q_net_input = tf.expand_dims(decoder, axis=0)
+    # encoder = GCNConv(channels=n_neurons, activation='relu', kernel_initializer=tf.keras.initializers.he_normal(),
+    #                   name="Encoder")([I1, Adj])
+    # decoder = GCNConv(channels=n_neurons, activation='relu', kernel_initializer=tf.keras.initializers.he_normal(),
+    #                   name="Decoder")([encoder, Adj])
+    gcn = GCNConv(n_neurons, kernel_initializer=tf.keras.initializers.he_uniform(), activation='relu', use_bias=False, name="Gcn")([I1, Adj])
     output = []
-    dense = Dense(n_neurons, kernel_initializer=tf.keras.initializers.he_normal(), activation='softmax', name="dense_layer")
+    dense = Dense(n_neurons, kernel_initializer=tf.keras.initializers.he_normal(), activation='relu',
+                  name="dense_layer")
+    last_dense = Dense(num_actions, kernel_initializer=tf.keras.initializers.he_normal(), activation='relu',
+                       name="last_dense_layer")
+    split = Lambda(lambda x: tf.squeeze(tf.split(x, num_or_size_splits=no_agents, axis=1), axis=2))(gcn)
     for j in list(range(no_agents)):
-        T = Lambda(lambda x: x[:, j], output_shape=(n_neurons,), name="lambda_layer_agent_%d" % j)(
-            decoder)
-        V = dense(T)
-        output.append(V)
+        V = dense(split[j])
+        V2 = last_dense(V)
+        output.append(V2)
 
     model = Model([I1, Adj], output)
     model._name = "final_network"
@@ -167,13 +170,14 @@ def __build_conf():
     logdir = os.path.join(hparams_log_dir, "hidden-untis=%d-batch-size=%d" %
                           (arglist.num_neurons, arglist.batch_size))
 
-    model = GCN_net(n_neurons=arglist.num_neurons, batch_size=arglist.batch_size)
-    model_t = GCN_net(n_neurons=arglist.num_neurons, batch_size=arglist.batch_size)
+    model = GCN_net(n_neurons=arglist.num_neurons)
+    model_t = GCN_net(n_neurons=arglist.num_neurons)
 
     model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=arglist.lr, clipnorm=1.0, clipvalue=0.5),
                   loss=tf.keras.losses.MeanSquaredError(),
                   metrics=['acc']
                   )
+    # loss=tf.keras.losses.Huber()
     model_t.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=arglist.lr, clipnorm=1.0, clipvalue=0.5),
                     loss=tf.keras.losses.MeanSquaredError(),
                     metrics=['acc']
@@ -198,7 +202,7 @@ def main(arglist):
     # The next 2* (n-1) positions are the relative positions of other agents. (Not used)
     num_features = obs_shape_n[0].shape[0]
     num_actions = env.action_space[0].n
-    feature_dim = num_features - (env.n - 1) * 4  # the size of node features
+    feature_dim = num_features - (env.n - 1) * 2  # the size of node features
     model, model_t, callback = __build_conf()
     reward_per_episode = pd.DataFrame(columns=['mean-reward'])
     agents_rewards = dict()
@@ -210,7 +214,6 @@ def main(arglist):
 
     ###########playing#############
     i_episode = 0
-    epsilon = 1.0
 
     # Normalize input
     # obs_n = env.reset()
@@ -228,13 +231,20 @@ def main(arglist):
     #
     # scaler = StandardScaler().fit(observations)
 
+    epsilon_init = 0.6
+    epsilon_end = 0.01
+    r = max((arglist.num_episodes - arglist.max_episode_len) / arglist.num_episodes, 0)
+
+    node_normalization = normalize_one.NormalizeOne()
     while i_episode < arglist.num_episodes:
         i_episode += 1
-        epsilon *= 0.996
-        if epsilon < 0.01: epsilon = 0.01
+        # decayed-epsilon-greedy
+
+        epsilon = (epsilon_init - epsilon_end) * r + epsilon_end
         print("episode: " + str(i_episode))
         obs_n = env.reset()
-        obs_n = [x[:(num_features - (env.n - 1) * 4)] for x in obs_n]
+        obs_n = [x[:(num_features - (env.n - 1) * 2)] for x in obs_n]
+        obs_n = [(x - min(x)) / (max(x) - min(x)) for x in obs_n]
 
         # obs_n = scaler.transform(obs_n)
         for i in range(no_agents):
@@ -248,7 +258,9 @@ def main(arglist):
             actions = get_actions_egreedy(predictions, epsilon=epsilon)
             # Observe next state, reward and done value
             new_obs_n, rew_n, done_n, _ = env.step(actions)
-            new_obs_n = [x[:(num_features - (env.n - 1) * 4)] for x in new_obs_n]
+            new_obs_n = [x[:(num_features - (env.n - 1) * 2)] for x in new_obs_n]
+            new_obs_n = [(x - min(x)) / (max(x) - min(x)) for x in new_obs_n]
+
             # new_obs_n = scaler.transform(new_obs_n)
             # Store the data in the replay memory
             replay_buffer.add(obs_n, adj, actions, rew_n, new_obs_n, done_n)
@@ -282,15 +294,19 @@ def main(arglist):
             q_values = model.predict([state, adj_n])
             target_q_values = model_t.predict([new_state, adj_n])
 
-            for k in range(len(batch)):
+            # Debug intermediate outputs
+            # get_layer_output2 = K.function([model.layers[0].input, model.layers[1].input], [model.layers[2].output])
+            # layer_output2 = get_layer_output2([state, adj_n])
+
+            for k in range(batch_size):
                 for j in range(no_agents):
                     if dones[k][j]:
                         q_values[j][k][actions[k][j]] = rewards[k][j]
                     else:
                         q_values[j][k][actions[k][j]] = rewards[k][j] + arglist.gamma * np.max(target_q_values[j][k])
-            model.fit([state, adj_n], q_values, epochs=1, batch_size=batch_size, verbose=1, callbacks=callback)
+            model.fit([state, adj_n], q_values, epochs=5, batch_size=batch_size, verbose=0, callbacks=callback)
 
-            if steps % 20 == 0:
+            if steps % 5 == 0:
                 # train target model
                 weights = model.get_weights()
                 target_weights = model_t.get_weights()
@@ -304,7 +320,7 @@ def main(arglist):
             agents_rewards[key] = val / steps
         total_reward = sum_reward / steps
         agents_rewards['total-reward'] = total_reward
-        reward_per_episode = reward_per_episode.append(agents_rewards,  ignore_index=True)
+        reward_per_episode = reward_per_episode.append(agents_rewards, ignore_index=True)
     result_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'results'))
     result_path = result_path + '/{}.csv'.format('reward_per_episode')
     reward_per_episode.to_csv(result_path)
