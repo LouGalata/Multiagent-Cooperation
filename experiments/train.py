@@ -327,14 +327,13 @@ def main(arglist):
                         q_values[j][k][actions[k][j]] = rewards[k][j] + arglist.gamma * np.max(target_q_values[j][k])
             model.fit([state, adj_n], q_values, epochs=50, batch_size=batch_size, verbose=0, callbacks=callback)
 
-            if steps % 5 == 0:
-                # train target model
-                weights = model.get_weights()
-                target_weights = model_t.get_weights()
+            # train target model
+            weights = model.get_weights()
+            target_weights = model_t.get_weights()
 
-                for w in range(len(weights)):
-                    target_weights[w] = arglist.tau * weights[w] + (1 - arglist.tau) * target_weights[w]
-                model_t.set_weights(target_weights)
+            for w in range(len(weights)):
+                target_weights[w] = arglist.tau * weights[w] + (1 - arglist.tau) * target_weights[w]
+            model_t.set_weights(target_weights)
 
         # Save metrics
         for key, val in agents_rewards.items():
