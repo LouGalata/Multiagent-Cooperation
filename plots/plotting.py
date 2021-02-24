@@ -4,8 +4,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 path = os.path.abspath(os.path.join(os.getcwd(), os.pardir, "results"))
-agrew = pd.read_pickle(os.path.join(path, "Nav-Coop-3_agrewards.pkl"))
-rew = pd.read_pickle(os.path.join(path, "Nav-Coop-3_rewards.pkl"))
+agrew = pd.read_pickle(os.path.join(path, "Nav-Coop-5_agrewards.pkl"))
+rew = pd.read_pickle(os.path.join(path, "Nav-Coop-5_rewards.pkl"))
 
 agrew_lengt = len(agrew)
 rew_length = len(rew)
