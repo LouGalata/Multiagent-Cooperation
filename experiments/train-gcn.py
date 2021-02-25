@@ -170,6 +170,7 @@ def __build_conf():
 
     model = GCN_net(arglist)
     model_t = GCN_net(arglist)
+    model_t.set_weights(model.get_weights())
 
     model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=arglist.lr, clipnorm=1.0, clipvalue=0.5),
                   loss=tf.keras.losses.MeanSquaredError(),

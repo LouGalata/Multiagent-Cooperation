@@ -1,22 +1,20 @@
 import argparse
 import os
 import pickle
-import sys
 import time
 import random
-import pandas as pd
 
 import numpy as np
+import keras
 import tensorflow as tf
 import tensorflow_probability as tfp
 from keras.layers import Input, Lambda, Dense
 from keras.models import Model
-from numba import jit
 from scipy.spatial import cKDTree
 from spektral.layers import GATConv
 from tensorflow.keras import Sequential
 
-from replay_buffer import ReplayBuffer
+from replay_buffer_entr import ReplayBuffer
 
 
 def parse_args():
@@ -81,7 +79,6 @@ def make_env(scenario_name, benchmark=False):
     else:
         env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
     return env
-
 
 def __get_callbacks(logdir):
     callbacks = [tf.keras.callbacks.TerminateOnNaN(),
@@ -168,8 +165,9 @@ def get_actions(graph, adj, gcn_net):
 def sample_actions_from_distr(predictions):
     prob = np.array(predictions)
     dist = tfp.distributions.Categorical(probs=prob, dtype=tf.float32)
+    entropies = dist.entropy()
     action = dist.sample()
-    return [int(x[0]) for x in action.numpy()]
+    return [int(x[0]) for x in action.numpy()], entropies
 
 
 def __build_conf():
@@ -194,16 +192,20 @@ def __build_conf():
     return model, model_t, callbacks
 
 
-def update_q_values(arglist, batch_size, no_agents, actions, rewards, dones, q_values, target_q_values):
-    for k in range(batch_size):
-        for j in range(no_agents):
-            q_values[j][k][actions[k][j]] = rewards[k][j] + arglist.gamma * (1.0 - float(dones[k][j])) * np.max(
-                target_q_values[j][k])
-    return q_values
+def clip_by_local_norm(gradients, norm):
+    """
+    Clips gradients by their own norm, NOT by the global norm
+    as it should be done (according to TF documentation).
+    This here is the way MADDPG does it.
+    """
+    for idx, grad in enumerate(gradients):
+        gradients[idx] = tf.clip_by_norm(grad, norm)
+    return gradients
 
 
 def main(arglist):
     global num_actions, feature_dim, no_agents
+    tt = time.time()
     env = make_env(arglist.scenario)
     env.discrete_action_input = True
 
@@ -212,6 +214,7 @@ def main(arglist):
     batch_size = arglist.batch_size
     no_neighbors = arglist.num_neighbors
     k_lst = list(range(no_neighbors + 2))[2:]  # [2,3]
+    beta = 0.05  # Hyperparameter that controls the influence of entropy loss
 
     # Velocity.x Velocity.y Pos.x Pos.y {Land.Pos.x Land.Pos.y}*10 {Ent.Pos.x Ent.Pos.y}*9
     num_features = obs_shape_n[0].shape[0]
@@ -227,7 +230,9 @@ def main(arglist):
     result_path = os.path.abspath(os.path.join(os.getcwd(), os.pardir, arglist.exp_name + "/rewards-per-episode.csv"))
     f = open(result_path, "w+")
     f.close()
+    best_mse = np.inf
 
+    optimizer = tf.keras.optimizers.Adam(lr=arglist.lr)
     replay_buffer = ReplayBuffer(arglist.max_buffer_size)  # Init Buffer
     episode_step = 0
     train_step = 0
@@ -244,12 +249,12 @@ def main(arglist):
             adj = get_adj(obs_n, k_lst)
 
         predictions = get_actions(to_tensor(np.array(obs_n)), adj, model)
-        actions = sample_actions_from_distr(predictions)
+        actions, entropies = sample_actions_from_distr(predictions)
         # Observe next state, reward and done value
         new_obs_n, rew_n, done_n, _ = env.step(actions)
         done = all(done_n)
         # Store the data in the replay memory
-        replay_buffer.add(obs_n, adj, actions, rew_n, new_obs_n, done_n)
+        replay_buffer.add(obs_n, adj, entropies, actions, rew_n, new_obs_n, done_n)
         obs_n = new_obs_n
 
         for i, rew in enumerate(rew_n):
@@ -277,16 +282,18 @@ def main(arglist):
             # Pass a batch of states through the policy network to calculate the Q(s, a)
             # Pass a batch of states through the target network to calculate the Q'(s', a)
             batch = replay_buffer.sample(batch_size)
-            state, adj_n, actions, rew_n, new_state, done_n = [], [], [], [], [], []
+            state, adj_n, entr_n, actions, rew_n, new_state, done_n = [], [], [], [], [], [], []
             # for e in batch:
             for e in range(batch_size):
                 state.append(batch[0][e])
-                new_state.append(batch[4][e])
+                new_state.append(batch[5][e])
                 adj_n.append(batch[1][e])
-                actions.append(batch[2][e])
-                rew_n.append(batch[3][e])
-                done_n.append(batch[5][e])
+                entr_n.append(batch[2][e])
+                actions.append(batch[3][e])
+                rew_n.append(batch[4][e])
+                done_n.append(batch[6][e])
             actions = np.asarray(actions)
+            entropies = np.asarray(entr_n)
             rewards = np.asarray(rew_n)
             dones = np.asarray(done_n)
             adj_n = np.asarray(adj_n)
@@ -296,12 +303,25 @@ def main(arglist):
             # Calculate TD-target
             q_values = model.predict([state, adj_n])
             target_q_values = model_t.predict([new_state, adj_n])
-            tt = time.time()
-            q_values = update_q_values(arglist, batch_size, no_agents, actions, rewards, dones, q_values,
-                                       target_q_values)
-            print("Step %d - Update Q values time: %.3f " % (train_step, tt - time.time()))
 
-            model.fit([state, adj_n], q_values, epochs=50, batch_size=batch_size, verbose=0, callbacks=callback)
+            for k in range(batch_size):
+                for j in range(no_agents):
+                    q_values[j][k][actions[k][j]] = rewards[k][j] + arglist.gamma * ((1.0 - float(dones[k][j])) * np.max(
+                        target_q_values[j][k]) + beta * entropies[k][j])
+
+
+            with tf.GradientTape() as tape:
+                logits = model([state, adj_n])
+                mse = tf.keras.backend.mean(keras.losses.mean_squared_error(logits, q_values))
+
+                gradients = tape.gradient(mse, model.trainable_variables)
+                local_clipped = clip_by_local_norm(gradients, 0.5)
+            optimizer.apply_gradients(zip(local_clipped, model.trainable_variables))
+            if mse.numpy() < best_mse:
+               tf.saved_model.save(model, os.path.abspath(os.path.join(
+                   os.path.dirname(__file__), '..', arglist.exp_name)))
+               best_mse = mse.numpy()
+            # model.fit([state, adj_n], q_values, epochs=50, batch_size=batch_size, verbose=0, callbacks=callback)
 
             # train target model
             weights = model.get_weights()
@@ -315,7 +335,7 @@ def main(arglist):
         if terminal and (len(episode_rewards) % arglist.save_rate == 0):
             with open(result_path, "a+") as f:
                 mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
-                            "mean_episode_reward" : round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
+                            "mean_episode_reward": round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
                             "time": round(time.time() - t_start, 3)}
                 print(mes_dict)
                 for item in list(mes_dict.values()):
@@ -328,19 +348,18 @@ def main(arglist):
             for rew in agent_rewards:
                 final_ep_ag_rewards.append(np.mean(rew[-arglist.save_rate:]))
 
-            # saves final episode reward for plotting training curve later
-            if len(episode_rewards) > arglist.num_episodes:
-                if not os.path.exists(arglist.plots_dir):
-                    os.makedirs(arglist.plots_dir)
-                rew_file_name = arglist.plots_dir + '/' + arglist.exp_name + '_rewards.pkl'
-                with open(rew_file_name, 'wb') as fp:
-                    pickle.dump(final_ep_rewards, fp)
-                break
+        # saves final episode reward for plotting training curve later
+        if len(episode_rewards) > arglist.num_episodes:
+            if not os.path.exists(arglist.plots_dir):
+                os.makedirs(arglist.plots_dir)
+            rew_file_name = arglist.plots_dir + '/' + arglist.exp_name + '_rewards.pkl'
+            with open(rew_file_name, 'wb') as fp:
+                pickle.dump(final_ep_rewards, fp)
+            break
 
 
 if __name__ == '__main__':
     print(tf.config.list_physical_devices('GPU'))
-    np.set_printoptions(threshold=sys.maxsize)
     arglist = parse_args()
     create_seed(arglist.seed)
     main(arglist)

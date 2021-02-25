@@ -4,14 +4,14 @@ import pickle
 import sys
 import time
 import random
-import pandas as pd
 
 import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
-from keras.layers import Input, Lambda, Dense
+
+from keras import backend as K
+from keras.layers import Input, Lambda, Dense, Add
 from keras.models import Model
-from numba import jit
 from scipy.spatial import cKDTree
 from spektral.layers import GATConv
 from tensorflow.keras import Sequential
@@ -28,6 +28,7 @@ def parse_args():
     parser.add_argument("--num-episodes", type=int, default=30000, help="number of episodes")
     parser.add_argument("--num-neighbors", type=int, default=2, help="number of neigbors to cooperate")
     parser.add_argument("--seed", type=int, default=1, help="seed")
+    parser.add_argument("--dueling", type=bool, default=True, help="Dueling DQN network model")
 
     # Experience Replay
     parser.add_argument("--max-buffer-size", type=int, default=20000, help="maximum buffer capacity")
@@ -123,7 +124,7 @@ def get_adj(arr, k_lst):
     return adj
 
 
-def GCN_net(arglist):
+def GAT_net(arglist):
     I1 = Input(shape=(no_agents, feature_dim), name="gcn_input")
     Adj = Input(shape=(no_agents, no_agents), name="adj")
     gat = GATConv(
@@ -135,26 +136,43 @@ def GCN_net(arglist):
         attn_kernel_regularizer=tf.keras.regularizers.l2(arglist.l2_reg),
         bias_regularizer=tf.keras.regularizers.l2(arglist.l2_reg),
     )([I1, Adj])
-    output = []
+    outputs = []
     dense = Dense(arglist.num_neurons,
                   kernel_initializer=tf.keras.initializers.he_uniform(),
                   activation=tf.keras.layers.LeakyReLU(alpha=0.1),
                   name="dense_layer")
 
-    last_dense = Dense(num_actions, kernel_initializer=tf.keras.initializers.he_uniform(),
-                       activation=tf.keras.activations.softmax,
-                       name="last_dense_layer")
+    dense2 = Dense(arglist.num_neurons/ 2,
+                  kernel_initializer=tf.keras.initializers.he_uniform(),
+                  activation=tf.keras.layers.LeakyReLU(alpha=0.1),
+                  name="sec_dense_layer")
+
+
+    state_value = Dense(1, kernel_initializer='he_uniform', name="value_output")
+    state_value_lambda = Lambda(lambda s: K.expand_dims(s[:, 0], -1), output_shape=(num_actions,))
+
+    action_advantage = Dense(num_actions, name="advantage_output", kernel_initializer='he_uniform')
+    action_advantage_lambda = Lambda(lambda a: a[:, :] - K.mean(a[:, :], keepdims=True), output_shape=(num_actions,))
+
     split = Lambda(lambda x: tf.squeeze(tf.split(x, num_or_size_splits=no_agents, axis=1), axis=2))(gat)
     for j in list(range(no_agents)):
         V = dense(split[j])
-        V2 = last_dense(V)
-        output.append(V2)
+        V2 = dense2(V)
+        if arglist.dueling:
+            state_value_dense = state_value(V2)
+            state_value_n = state_value_lambda(state_value_dense)
+            action_adj_dense = action_advantage(V2)
+            action_adj_n = action_advantage_lambda(action_adj_dense)
+            output = Add()([state_value_n, action_adj_n])
+            output = tf.keras.activations.softmax(output, axis=-1)
+            outputs.append(output)
+        else:
+            outputs.append(V2)
 
-    model = Model([I1, Adj], output)
+
+    model = Model([I1, Adj], outputs)
     model._name = "final_network"
-    # output = Concatenate()(output) # vdn_model =
-    # model.summary()
-    # tf.keras.utils.plot_model(model, show_shapes=True)
+    tf.keras.utils.plot_model(model, show_shapes=True)
     return model
 
 
@@ -177,8 +195,8 @@ def __build_conf():
     logdir = os.path.join(hparams_log_dir, "hidden-units=%d-batch-size=%d" %
                           (arglist.num_neurons, arglist.batch_size))
 
-    model = GCN_net(arglist)
-    model_t = GCN_net(arglist)
+    model = GAT_net(arglist)
+    model_t = GAT_net(arglist)
     model_t.set_weights(model.get_weights())
 
     model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=arglist.lr, clipnorm=1.0, clipvalue=0.5),
@@ -197,8 +215,9 @@ def __build_conf():
 def update_q_values(arglist, batch_size, no_agents, actions, rewards, dones, q_values, target_q_values):
     for k in range(batch_size):
         for j in range(no_agents):
-            q_values[j][k][actions[k][j]] = rewards[k][j] + arglist.gamma * (1.0 - float(dones[k][j])) * np.max(
-                target_q_values[j][k])
+            a = np.argmax(target_q_values[j][k])
+            q_values[j][k][actions[k][j]] = rewards[k][j] + arglist.gamma * (1.0 - float(dones[k][j])) * (
+                target_q_values[j][k][a])
     return q_values
 
 
@@ -227,6 +246,7 @@ def main(arglist):
     result_path = os.path.abspath(os.path.join(os.getcwd(), os.pardir, arglist.exp_name + "/rewards-per-episode.csv"))
     f = open(result_path, "w+")
     f.close()
+
 
     replay_buffer = ReplayBuffer(arglist.max_buffer_size)  # Init Buffer
     episode_step = 0
@@ -299,7 +319,7 @@ def main(arglist):
             tt = time.time()
             q_values = update_q_values(arglist, batch_size, no_agents, actions, rewards, dones, q_values,
                                        target_q_values)
-            print("Step %d - Update Q values time: %.3f " % (train_step, tt - time.time()))
+            print("Update Q values time: %.3f " % (tt - time.time()))
 
             model.fit([state, adj_n], q_values, epochs=50, batch_size=batch_size, verbose=0, callbacks=callback)
 
@@ -315,7 +335,7 @@ def main(arglist):
         if terminal and (len(episode_rewards) % arglist.save_rate == 0):
             with open(result_path, "a+") as f:
                 mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
-                            "mean_episode_reward" : round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
+                            "mean_episode_reward": round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
                             "time": round(time.time() - t_start, 3)}
                 print(mes_dict)
                 for item in list(mes_dict.values()):
@@ -328,18 +348,17 @@ def main(arglist):
             for rew in agent_rewards:
                 final_ep_ag_rewards.append(np.mean(rew[-arglist.save_rate:]))
 
-            # saves final episode reward for plotting training curve later
-            if len(episode_rewards) > arglist.num_episodes:
-                if not os.path.exists(arglist.plots_dir):
-                    os.makedirs(arglist.plots_dir)
-                rew_file_name = arglist.plots_dir + '/' + arglist.exp_name + '_rewards.pkl'
-                with open(rew_file_name, 'wb') as fp:
-                    pickle.dump(final_ep_rewards, fp)
-                break
+        # saves final episode reward for plotting training curve later
+        if len(episode_rewards) > arglist.num_episodes:
+            if not os.path.exists(arglist.plots_dir):
+                os.makedirs(arglist.plots_dir)
+            rew_file_name = arglist.plots_dir + '/' + arglist.exp_name + '_rewards.pkl'
+            with open(rew_file_name, 'wb') as fp:
+                pickle.dump(final_ep_rewards, fp)
+            break
 
 
 if __name__ == '__main__':
-    print(tf.config.list_physical_devices('GPU'))
     np.set_printoptions(threshold=sys.maxsize)
     arglist = parse_args()
     create_seed(arglist.seed)
