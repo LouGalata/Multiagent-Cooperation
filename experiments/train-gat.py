@@ -152,9 +152,6 @@ def GCN_net(arglist):
 
     model = Model([I1, Adj], output)
     model._name = "final_network"
-    # output = Concatenate()(output) # vdn_model =
-    # model.summary()
-    # tf.keras.utils.plot_model(model, show_shapes=True)
     return model
 
 
@@ -225,9 +222,8 @@ def main(arglist):
     final_ep_rewards = []  # sum of rewards for training curve
     final_ep_ag_rewards = []  # agent rewards for training curve
     result_path = os.path.abspath(os.path.join(os.getcwd(), os.pardir, arglist.exp_name + "/rewards-per-episode.csv"))
-    f = open(result_path, "w+")
-    f.close()
-
+    if not os.path.exists(result_path):
+        os.makedirs(os.path.dirname(result_path), exist_ok=True)
     replay_buffer = ReplayBuffer(arglist.max_buffer_size)  # Init Buffer
     episode_step = 0
     train_step = 0
@@ -317,11 +313,12 @@ def main(arglist):
                 mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
                             "mean_episode_reward" : round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
                             "time": round(time.time() - t_start, 3)}
-                print(mes_dict)
+
                 for item in list(mes_dict.values()):
                     f.write("%s\t" % item)
                 f.write("\n")
                 f.close()
+            print(mes_dict)
             t_start = time.time()
             # Keep track of final episode reward
             final_ep_rewards.append(np.mean(episode_rewards[-arglist.save_rate:]))

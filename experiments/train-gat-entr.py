@@ -1,11 +1,11 @@
 import argparse
 import os
 import pickle
-import time
 import random
+import time
 
-import numpy as np
 import keras
+import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
 from keras.layers import Input, Lambda, Dense
@@ -23,7 +23,7 @@ def parse_args():
     parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
     parser.add_argument("--no-agents", type=int, default=4, help="number of agents")
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
-    parser.add_argument("--num-episodes", type=int, default=30000, help="number of episodes")
+    parser.add_argument("--num-episodes", type=int, default=50000, help="number of episodes")
     parser.add_argument("--num-neighbors", type=int, default=2, help="number of neigbors to cooperate")
     parser.add_argument("--seed", type=int, default=1, help="seed")
 
@@ -72,13 +72,14 @@ def make_env(scenario_name, benchmark=False):
     scenario = scenarios.load(scenario_name + ".py").Scenario()
     # create world
     # Here is defined the num_agents
-    world = scenario.make_world(no_agents=arglist.no_agents, seed = arglist.seed)
+    world = scenario.make_world(no_agents=arglist.no_agents, seed=arglist.seed)
     # create multiagent environment
     if benchmark:
         env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation, scenario.benchmark_data)
     else:
         env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
     return env
+
 
 def __get_callbacks(logdir):
     callbacks = [tf.keras.callbacks.TerminateOnNaN(),
@@ -228,8 +229,8 @@ def main(arglist):
     final_ep_rewards = []  # sum of rewards for training curve
     final_ep_ag_rewards = []  # agent rewards for training curve
     result_path = os.path.abspath(os.path.join(os.getcwd(), os.pardir, arglist.exp_name + "/rewards-per-episode.csv"))
-    f = open(result_path, "w+")
-    f.close()
+    if not os.path.exists(result_path):
+        os.makedirs(os.path.dirname(result_path), exist_ok=True)
     best_mse = np.inf
 
     optimizer = tf.keras.optimizers.Adam(lr=arglist.lr)
@@ -306,9 +307,9 @@ def main(arglist):
 
             for k in range(batch_size):
                 for j in range(no_agents):
-                    q_values[j][k][actions[k][j]] = rewards[k][j] + arglist.gamma * ((1.0 - float(dones[k][j])) * np.max(
+                    q_values[j][k][actions[k][j]] = rewards[k][j] + arglist.gamma * (
+                            (1.0 - float(dones[k][j])) * np.max(
                         target_q_values[j][k]) + beta * entropies[k][j])
-
 
             with tf.GradientTape() as tape:
                 logits = model([state, adj_n])
@@ -318,10 +319,9 @@ def main(arglist):
                 local_clipped = clip_by_local_norm(gradients, 0.5)
             optimizer.apply_gradients(zip(local_clipped, model.trainable_variables))
             if mse.numpy() < best_mse:
-               tf.saved_model.save(model, os.path.abspath(os.path.join(
-                   os.path.dirname(__file__), '..', arglist.exp_name)))
-               best_mse = mse.numpy()
-            # model.fit([state, adj_n], q_values, epochs=50, batch_size=batch_size, verbose=0, callbacks=callback)
+                tf.saved_model.save(model, os.path.abspath(os.path.join(
+                    os.path.dirname(__file__), '..', arglist.exp_name)))
+                best_mse = mse.numpy()
 
             # train target model
             weights = model.get_weights()

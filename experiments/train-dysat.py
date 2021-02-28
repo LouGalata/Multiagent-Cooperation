@@ -243,8 +243,8 @@ def main(arglist):
     final_ep_rewards = []  # sum of rewards for training curve
     final_ep_ag_rewards = []  # agent rewards for training curve
     result_path = os.path.abspath(os.path.join(os.getcwd(), os.pardir, arglist.exp_name + "/rewards-per-episode.csv"))
-    f = open(result_path, "w+")
-    f.close()
+    if not os.path.exists(result_path):
+        os.makedirs(os.path.dirname(result_path), exist_ok=True)
 
     replay_buffer = ReplayBuffer(arglist.max_buffer_size)     # Init Buffer
     episode_step = 0

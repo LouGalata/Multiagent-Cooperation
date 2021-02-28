@@ -8,15 +8,11 @@ import random
 import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
-
-from keras import backend as K
-from keras.layers import Input, Lambda, Dense, Add
+from keras.layers import Input, Dense
 from keras.models import Model
-from scipy.spatial import cKDTree
-from spektral.layers import GATConv
 from tensorflow.keras import Sequential
 
-from replay_buffer import ReplayBuffer
+from replay_buffer_iql import ReplayBuffer
 
 
 def parse_args():
@@ -28,7 +24,6 @@ def parse_args():
     parser.add_argument("--num-episodes", type=int, default=30000, help="number of episodes")
     parser.add_argument("--num-neighbors", type=int, default=2, help="number of neigbors to cooperate")
     parser.add_argument("--seed", type=int, default=1, help="seed")
-    parser.add_argument("--dueling", type=bool, default=True, help="Dueling DQN network model")
 
     # Experience Replay
     parser.add_argument("--max-buffer-size", type=int, default=20000, help="maximum buffer capacity")
@@ -84,14 +79,13 @@ def make_env(scenario_name, benchmark=False):
     return env
 
 
-def __get_callbacks(logdir):
+def __get_callbacks(logdir, idx):
+    path = "agent %d " % idx
     callbacks = [tf.keras.callbacks.TerminateOnNaN(),
-                 tf.keras.callbacks.EarlyStopping(monitor='loss',
-                                                  patience=5),
+                 tf.keras.callbacks.EarlyStopping(monitor='loss', patience=5),
                  tf.keras.callbacks.TensorBoard(logdir, update_freq="epoch", profile_batch=0),
-
                  tf.keras.callbacks.ModelCheckpoint(
-                     filepath=os.path.join(logdir, "cp.ckpt"),
+                     filepath=os.path.join(path + '_' + logdir, "cp.ckpt"),
                      save_best_only=True,
                      save_freq=25,
                      save_weights_only=False,
@@ -101,86 +95,35 @@ def __get_callbacks(logdir):
     return callbacks
 
 
-def get_adj(arr, k_lst):
-    """
-    Take as input the new obs. In position 4 to k, there are the x and y coordinates of each agent
-    Make an adjacency matrix, where each agent communicates with the k closest ones
-    """
-    points = [i[2:4] for i in arr]
-    adj = np.zeros((no_agents, no_agents), dtype=float)
-    # construct a kd-tree
-    tree = cKDTree(points)
-    for cnt, row in enumerate(points):
-        # find k nearest neighbors for each element of data, squeezing out the zero result (the first nearest
-        # neighbor is always itself)
-        dd, ii = tree.query(row, k=k_lst)
-        # apply an index filter on data to get the nearest neighbor elements
-        adj[cnt][ii] = 1
-        # adjacency[cnt, ii] = 1.0
-
-    # add self-loops and symmetric normalization
-    adj = GATConv.preprocess(adj).astype('f4')
-    # Batch Mode needs dense inputs
-    return adj
-
-
-def GAT_net(arglist):
-    I1 = Input(shape=(no_agents, feature_dim), name="gcn_input")
-    Adj = Input(shape=(no_agents, no_agents), name="adj")
-    gat = GATConv(
-        arglist.num_neurons,
-        attn_heads=4,
-        concat_heads=True,
-        activation="relu",
-        kernel_regularizer=tf.keras.regularizers.l2(arglist.l2_reg),
-        attn_kernel_regularizer=tf.keras.regularizers.l2(arglist.l2_reg),
-        bias_regularizer=tf.keras.regularizers.l2(arglist.l2_reg),
-    )([I1, Adj])
-    outputs = []
+def IQL_net(arglist):
+    I1 = Input(shape=(feature_dim,), name="gcn_input")
     dense = Dense(arglist.num_neurons,
                   kernel_initializer=tf.keras.initializers.he_uniform(),
                   activation=tf.keras.layers.LeakyReLU(alpha=0.1),
-                  name="dense_layer")
-
-    dense2 = Dense(arglist.num_neurons/ 2,
+                  name="dense_layer")(I1)
+    med_dense = Dense(arglist.num_neurons,
                   kernel_initializer=tf.keras.initializers.he_uniform(),
                   activation=tf.keras.layers.LeakyReLU(alpha=0.1),
-                  name="sec_dense_layer")
+                  name="med_layer")(dense)
 
-
-    state_value = Dense(1, kernel_initializer='he_uniform', name="value_output")
-    state_value_lambda = Lambda(lambda s: K.expand_dims(s[:, 0], -1), output_shape=(num_actions,))
-
-    action_advantage = Dense(num_actions, name="advantage_output", kernel_initializer='he_uniform')
-    action_advantage_lambda = Lambda(lambda a: a[:, :] - K.mean(a[:, :], keepdims=True), output_shape=(num_actions,))
-
-    split = Lambda(lambda x: tf.squeeze(tf.split(x, num_or_size_splits=no_agents, axis=1), axis=2))(gat)
-    for j in list(range(no_agents)):
-        V = dense(split[j])
-        V2 = dense2(V)
-        if arglist.dueling:
-            state_value_dense = state_value(V2)
-            state_value_n = state_value_lambda(state_value_dense)
-            action_adj_dense = action_advantage(V2)
-            action_adj_n = action_advantage_lambda(action_adj_dense)
-            output = Add()([state_value_n, action_adj_n])
-            output = tf.keras.activations.softmax(output, axis=-1)
-            outputs.append(output)
-        else:
-            outputs.append(V2)
-
-
-    model = Model([I1, Adj], outputs)
-    model._name = "final_network"
-    tf.keras.utils.plot_model(model, show_shapes=True)
+    last_dense = Dense(num_actions, kernel_initializer=tf.keras.initializers.he_uniform(),
+                       activation=tf.keras.activations.softmax,
+                       name="last_dense_layer")(med_dense)
+    model = Model(I1, last_dense)
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=arglist.lr),
+                  loss=tf.keras.losses.MeanSquaredError(),
+                  metrics=['acc']
+                  )
     return model
 
 
-def get_actions(graph, adj, gcn_net):
-    graph = tf.expand_dims(graph, axis=0)
-    adj = tf.expand_dims(adj, axis=0)
-    preds = gcn_net.predict([graph, adj])
-    return preds
+def get_actions(state, nets):
+    predictions = []
+    for st, net in zip(state, nets):
+        st = tf.expand_dims(st, axis=0)
+        pred_n = net.predict(st)
+        predictions.append(pred_n)
+    return predictions
 
 
 def sample_actions_from_distr(predictions):
@@ -195,29 +138,20 @@ def __build_conf():
     logdir = os.path.join(hparams_log_dir, "hidden-units=%d-batch-size=%d" %
                           (arglist.num_neurons, arglist.batch_size))
 
-    model = GAT_net(arglist)
-    model_t = GAT_net(arglist)
-    model_t.set_weights(model.get_weights())
+    model = [IQL_net(arglist) for _ in range(no_agents)]
+    model_t = [IQL_net(arglist) for _ in range(no_agents)]
+    for mdl, mdl_t in zip(model, model_t):
+        mdl_t.set_weights(mdl.get_weights())
 
-    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=arglist.lr, clipnorm=1.0, clipvalue=0.5),
-                  loss=tf.keras.losses.MeanSquaredError(),
-                  metrics=['acc']
-                  )
-    model_t.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=arglist.lr, clipnorm=1.0, clipvalue=0.5),
-                    loss=tf.keras.losses.MeanSquaredError(),
-                    metrics=['acc']
-                    )
-
-    callbacks = __get_callbacks(logdir)
+    callbacks = [__get_callbacks(logdir, i) for i in range(no_agents)]
     return model, model_t, callbacks
 
 
 def update_q_values(arglist, batch_size, no_agents, actions, rewards, dones, q_values, target_q_values):
-    for k in range(batch_size):
-        for j in range(no_agents):
-            a = np.argmax(target_q_values[j][k])
-            q_values[j][k][actions[k][j]] = rewards[k][j] + arglist.gamma * (1.0 - float(dones[k][j])) * (
-                target_q_values[j][k][a])
+    for j in range(no_agents):
+        for k in range(batch_size):
+            q_values[j][k][actions[j][k]] = rewards[j][k] + arglist.gamma * (1.0 - float(dones[j][k])) * np.max(
+                target_q_values[j][k])
     return q_values
 
 
@@ -229,8 +163,6 @@ def main(arglist):
     obs_shape_n = env.observation_space
     no_agents = env.n
     batch_size = arglist.batch_size
-    no_neighbors = arglist.num_neighbors
-    k_lst = list(range(no_neighbors + 2))[2:]  # [2,3]
 
     # Velocity.x Velocity.y Pos.x Pos.y {Land.Pos.x Land.Pos.y}*10 {Ent.Pos.x Ent.Pos.y}*9
     num_features = obs_shape_n[0].shape[0]
@@ -253,22 +185,19 @@ def main(arglist):
 
     t_start = time.time()
     obs_n = env.reset()
-    adj = get_adj(obs_n, k_lst)
 
     print('Starting iterations...')
     while True:
         episode_step += 1
         terminal = (episode_step >= arglist.max_episode_len)
-        if episode_step % 3 == 0:
-            adj = get_adj(obs_n, k_lst)
 
-        predictions = get_actions(to_tensor(np.array(obs_n)), adj, model)
+        predictions = get_actions(to_tensor(np.array(obs_n)), model)
         actions = sample_actions_from_distr(predictions)
         # Observe next state, reward and done value
         new_obs_n, rew_n, done_n, _ = env.step(actions)
         done = all(done_n)
         # Store the data in the replay memory
-        replay_buffer.add(obs_n, adj, actions, rew_n, new_obs_n, done_n)
+        replay_buffer.add(obs_n, actions, rew_n, new_obs_n, done_n)
         obs_n = new_obs_n
 
         for i, rew in enumerate(rew_n):
@@ -296,45 +225,45 @@ def main(arglist):
             # Pass a batch of states through the policy network to calculate the Q(s, a)
             # Pass a batch of states through the target network to calculate the Q'(s', a)
             batch = replay_buffer.sample(batch_size)
-            state, adj_n, actions, rew_n, new_state, done_n = [], [], [], [], [], []
+            state, actions, rew_n, new_state, done_n = [], [], [], [], []
             # for e in batch:
             for e in range(batch_size):
                 state.append(batch[0][e])
-                new_state.append(batch[4][e])
-                adj_n.append(batch[1][e])
-                actions.append(batch[2][e])
-                rew_n.append(batch[3][e])
-                done_n.append(batch[5][e])
-            actions = np.asarray(actions)
-            rewards = np.asarray(rew_n)
-            dones = np.asarray(done_n)
-            adj_n = np.asarray(adj_n)
-            state = np.asarray(state)
-            new_state = np.asarray(new_state)
+                new_state.append(batch[3][e])
+                actions.append(batch[1][e])
+                rew_n.append(batch[2][e])
+                done_n.append(batch[4][e])\
+
+            actions = np.swapaxes(actions, 0, 1)
+            rewards = np.swapaxes(rew_n, 0, 1)
+            dones = np.swapaxes(done_n, 0, 1)
+            state = np.swapaxes(state, 0, 1)
+            new_state = np.swapaxes(new_state, 0, 1)
 
             # Calculate TD-target
-            q_values = model.predict([state, adj_n])
-            target_q_values = model_t.predict([new_state, adj_n])
+            q_values = [net.predict(st) for net, st in zip(model, state)]
+            target_q_values = [net.predict(st) for net, st in zip(model_t, new_state)]
             tt = time.time()
             q_values = update_q_values(arglist, batch_size, no_agents, actions, rewards, dones, q_values,
                                        target_q_values)
-            print("Update Q values time: %.3f " % (tt - time.time()))
+            print("Step %d - Update Q values time: %.3f " % (train_step, tt - time.time()))
 
-            model.fit([state, adj_n], q_values, epochs=50, batch_size=batch_size, verbose=0, callbacks=callback)
+            for cnt, (net, st, y) in enumerate(zip(model, state, q_values)):
+                net.fit(st, y, epochs=50, batch_size=batch_size, verbose=0, callbacks=callback[cnt])
 
             # train target model
-            weights = model.get_weights()
-            target_weights = model_t.get_weights()
-
-            for w in range(len(weights)):
-                target_weights[w] = arglist.tau * weights[w] + (1 - arglist.tau) * target_weights[w]
-            model_t.set_weights(target_weights)
+            for mdl, mdl_t in zip(model, model_t):
+                weights = mdl.get_weights()
+                target_weights = mdl_t.get_weights()
+                for w in range(len(weights)):
+                    target_weights[w] = arglist.tau * weights[w] + (1 - arglist.tau) * target_weights[w]
+                mdl_t.set_weights(target_weights)
 
         # display training output
         if terminal and (len(episode_rewards) % arglist.save_rate == 0):
             with open(result_path, "a+") as f:
                 mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
-                            "mean_episode_reward": round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
+                            "mean_episode_reward" : round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
                             "time": round(time.time() - t_start, 3)}
                 print(mes_dict)
                 for item in list(mes_dict.values()):
@@ -347,17 +276,18 @@ def main(arglist):
             for rew in agent_rewards:
                 final_ep_ag_rewards.append(np.mean(rew[-arglist.save_rate:]))
 
-        # saves final episode reward for plotting training curve later
-        if len(episode_rewards) > arglist.num_episodes:
-            if not os.path.exists(arglist.plots_dir):
-                os.makedirs(arglist.plots_dir)
-            rew_file_name = arglist.plots_dir + '/' + arglist.exp_name + '_rewards.pkl'
-            with open(rew_file_name, 'wb') as fp:
-                pickle.dump(final_ep_rewards, fp)
-            break
+            # saves final episode reward for plotting training curve later
+            if len(episode_rewards) > arglist.num_episodes:
+                if not os.path.exists(arglist.plots_dir):
+                    os.makedirs(arglist.plots_dir)
+                rew_file_name = arglist.plots_dir + '/' + arglist.exp_name + '_rewards.pkl'
+                with open(rew_file_name, 'wb') as fp:
+                    pickle.dump(final_ep_rewards, fp)
+                break
 
 
 if __name__ == '__main__':
+    print(tf.config.list_physical_devices('GPU'))
     np.set_printoptions(threshold=sys.maxsize)
     arglist = parse_args()
     create_seed(arglist.seed)
