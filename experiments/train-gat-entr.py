@@ -121,7 +121,7 @@ def get_adj(arr, k_lst):
     return adj
 
 
-def GCN_net(arglist):
+def GAT_net(arglist):
     I1 = Input(shape=(no_agents, feature_dim), name="gcn_input")
     Adj = Input(shape=(no_agents, no_agents), name="adj")
     gat = GATConv(
@@ -134,18 +134,12 @@ def GCN_net(arglist):
         bias_regularizer=tf.keras.regularizers.l2(arglist.l2_reg),
     )([I1, Adj])
     output = []
-    dense = Dense(arglist.num_neurons,
-                  kernel_initializer=tf.keras.initializers.he_uniform(),
-                  activation=tf.keras.layers.LeakyReLU(alpha=0.1),
-                  name="dense_layer")
-
-    last_dense = Dense(num_actions, kernel_initializer=tf.keras.initializers.he_uniform(),
-                       activation=tf.keras.activations.softmax,
-                       name="last_dense_layer")
     split = Lambda(lambda x: tf.squeeze(tf.split(x, num_or_size_splits=no_agents, axis=1), axis=2))(gat)
     for j in list(range(no_agents)):
-        V = dense(split[j])
-        V2 = last_dense(V)
+        V = Dense(arglist.num_neurons,
+                  kernel_initializer=tf.keras.initializers.he_uniform(),
+                  activation=tf.keras.layers.LeakyReLU(alpha=0.1))(split[j])
+        V2 = Dense(num_actions, kernel_initializer=tf.keras.initializers.he_uniform())(V)
         output.append(V2)
 
     model = Model([I1, Adj], output)
@@ -156,10 +150,10 @@ def GCN_net(arglist):
     return model
 
 
-def get_actions(graph, adj, gcn_net):
+def get_actions(graph, adj, net):
     graph = tf.expand_dims(graph, axis=0)
     adj = tf.expand_dims(adj, axis=0)
-    preds = gcn_net.predict([graph, adj])
+    preds = net.predict([graph, adj])
     return preds
 
 
@@ -176,8 +170,8 @@ def __build_conf():
     logdir = os.path.join(hparams_log_dir, "hidden-units=%d-batch-size=%d" %
                           (arglist.num_neurons, arglist.batch_size))
 
-    model = GCN_net(arglist)
-    model_t = GCN_net(arglist)
+    model = GAT_net(arglist)
+    model_t = GAT_net(arglist)
     model_t.set_weights(model.get_weights())
 
     model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=arglist.lr, clipnorm=1.0, clipvalue=0.5),
@@ -206,7 +200,6 @@ def clip_by_local_norm(gradients, norm):
 
 def main(arglist):
     global num_actions, feature_dim, no_agents
-    tt = time.time()
     env = make_env(arglist.scenario)
     env.discrete_action_input = True
 
@@ -314,7 +307,6 @@ def main(arglist):
             with tf.GradientTape() as tape:
                 logits = model([state, adj_n])
                 mse = tf.keras.backend.mean(keras.losses.mean_squared_error(logits, q_values))
-
                 gradients = tape.gradient(mse, model.trainable_variables)
                 local_clipped = clip_by_local_norm(gradients, 0.5)
             optimizer.apply_gradients(zip(local_clipped, model.trainable_variables))

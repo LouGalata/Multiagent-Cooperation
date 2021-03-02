@@ -1,17 +1,15 @@
 import argparse
 import os
 import pickle
+import random
 import sys
 import time
-import random
-import pandas as pd
 
 import numpy as np
 import tensorflow as tf
-import tensorflow_probability as tfp
-from keras.layers import Input, Lambda, Dense
+import keras.backend as K
+from keras.layers import Input, Lambda, Dense, concatenate, merge
 from keras.models import Model
-from numba import jit
 from scipy.spatial import cKDTree
 from spektral.layers import GATConv
 from tensorflow.keras import Sequential
@@ -23,7 +21,7 @@ def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
-    parser.add_argument("--no-agents", type=int, default=4, help="number of agents")
+    parser.add_argument("--no-agents", type=int, default=6, help="number of agents")
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--num-episodes", type=int, default=30000, help="number of episodes")
     parser.add_argument("--num-neighbors", type=int, default=2, help="number of neigbors to cooperate")
@@ -34,7 +32,11 @@ def parse_args():
 
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
-    parser.add_argument("--batch-size", type=int, default=512, help="number of episodes to optimize at the same time")
+    parser.add_argument("--batch-size", type=int, default=128, help="number of episodes to optimize at the same time")
+    parser.add_argument("--epsilon", type=float, default=1.0, help="epsilon exploration")
+    parser.add_argument("--epsilon-decay", type=float, default=0.0001, help="epsilon decay")
+    parser.add_argument("--min-epsilon", type=float, default=0.01, help="min epsilon")
+    parser.add_argument("--max-epsilon", type=float, default=1.0, help="max epsilon")
 
     # GNN training parameters
     parser.add_argument("--num-neurons", type=int, default=32, help="number of neurons on the first gnn")
@@ -46,7 +48,7 @@ def parse_args():
 
     # Evaluation
     parser.add_argument("--display", action="store_true", default=False)
-    parser.add_argument("--exp-name", type=str, default='GAT-exp', help="name of the experiment")
+    parser.add_argument("--exp-name", type=str, default='VDN-GAT-ELU', help="name of the experiment")
     parser.add_argument("--save-rate", type=int, default=50,
                         help="save model once every time this many episodes are completed")
     parser.add_argument("--plots-dir", type=str, default="./learning_curves/",
@@ -61,6 +63,7 @@ def to_tensor(arg):
 
 
 def create_seed(seed):
+    seed = int(time.time())
     random.seed(seed)
     np.random.seed(seed)
     tf.random.set_seed(seed)
@@ -74,7 +77,7 @@ def make_env(scenario_name, benchmark=False):
     scenario = scenarios.load(scenario_name + ".py").Scenario()
     # create world
     # Here is defined the num_agents
-    world = scenario.make_world(no_agents=arglist.no_agents, seed = arglist.seed)
+    world = scenario.make_world(no_agents=arglist.no_agents, seed=arglist.seed)
     # create multiagent environment
     if benchmark:
         env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation, scenario.benchmark_data)
@@ -123,49 +126,68 @@ def get_adj(arr, k_lst):
     return adj
 
 
-def GCN_net(arglist):
-    I1 = Input(shape=(no_agents, feature_dim), name="gcn_input")
+def graph_net(arglist):
+    I1 = Input(shape=(no_agents, feature_dim), name="graph_input")
     Adj = Input(shape=(no_agents, no_agents), name="adj")
     gat = GATConv(
         arglist.num_neurons,
-        attn_heads=4,
+        activation='elu',
+        attn_heads=2,
         concat_heads=True,
-        activation="relu",
-        kernel_regularizer=tf.keras.regularizers.l2(arglist.l2_reg),
-        attn_kernel_regularizer=tf.keras.regularizers.l2(arglist.l2_reg),
-        bias_regularizer=tf.keras.regularizers.l2(arglist.l2_reg),
     )([I1, Adj])
-    output = []
 
+    dense = Dense(arglist.num_neurons,
+                  kernel_initializer=tf.keras.initializers.he_uniform(),
+                  activation=tf.keras.layers.LeakyReLU(alpha=0.1),
+                  name="dense_layer")
+
+    last_dense = Dense(num_actions, kernel_initializer=tf.keras.initializers.he_uniform(),
+                       name="last_dense_layer")
     split = Lambda(lambda x: tf.squeeze(tf.split(x, num_or_size_splits=no_agents, axis=1), axis=2))(gat)
+    outputs = []
     for j in list(range(no_agents)):
-        V = Dense(arglist.num_neurons,
-                      kernel_initializer=tf.keras.initializers.he_uniform(),
-                      activation=tf.keras.layers.LeakyReLU(alpha=0.1),
-                      name="dense_layer")(split[j])
-        V2 = Dense(num_actions, kernel_initializer=tf.keras.initializers.he_uniform(),
-                           activation=tf.keras.activations.softmax,
-                           name="last_dense_layer")(V)
-        output.append(V2)
+        outputs.append(last_dense(dense(split[j])))
 
-    model = Model([I1, Adj], output)
+    V = tf.stack(outputs, axis=1)
+    model = Model([I1, Adj], V)
     model._name = "final_network"
-    # tf.keras.utils.plot_model(model, show_shapes=True)
+
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=arglist.lr),
+                  loss=tf.keras.losses.MeanSquaredError(),
+                  metrics=['acc']
+                  )
+
+    tf.keras.utils.plot_model(model, show_shapes=True)
     return model
 
 
-def get_actions(graph, adj, gcn_net):
+def clip_by_local_norm(gradients, norm):
+    """
+    Clips gradients by their own norm, NOT by the global norm
+    as it should be done (according to TF documentation).
+    This here is the way MADDPG does it.
+    """
+    for idx, grad in enumerate(gradients):
+        gradients[idx] = tf.clip_by_norm(grad, norm)
+    return gradients
+
+
+def get_predictions(graph, adj, net):
     graph = tf.expand_dims(graph, axis=0)
     adj = tf.expand_dims(adj, axis=0)
-    preds = gcn_net.predict([graph, adj])
+    preds = net.predict([graph, adj])
     return preds
 
 
-def sample_actions_from_distr(predictions):
-    prob = np.array(predictions)
-    dist = tfp.distributions.Categorical(probs=prob, dtype=tf.float32)
-    action = dist.sample()
-    return [int(x[0]) for x in action.numpy()]
+def get_actions(predictions, epsilon):
+    best_actions = tf.argmax(predictions, axis=-1)[0]
+    actions = []
+    for i in range(no_agents):
+        if np.random.rand() < epsilon:
+            actions.append(np.random.randint(0, num_actions))
+        else:
+            actions.append(best_actions.numpy()[i])
+    return np.array(actions)
 
 
 def __build_conf():
@@ -173,29 +195,12 @@ def __build_conf():
     logdir = os.path.join(hparams_log_dir, "hidden-units=%d-batch-size=%d" %
                           (arglist.num_neurons, arglist.batch_size))
 
-    model = GCN_net(arglist)
-    model_t = GCN_net(arglist)
+    model = graph_net(arglist)
+    model_t = graph_net(arglist)
     model_t.set_weights(model.get_weights())
-
-    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=arglist.lr, clipnorm=1.0, clipvalue=0.5),
-                  loss=tf.keras.losses.MeanSquaredError(),
-                  metrics=['acc']
-                  )
-    model_t.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=arglist.lr, clipnorm=1.0, clipvalue=0.5),
-                    loss=tf.keras.losses.MeanSquaredError(),
-                    metrics=['acc']
-                    )
 
     callbacks = __get_callbacks(logdir)
     return model, model_t, callbacks
-
-
-def update_q_values(arglist, batch_size, no_agents, actions, rewards, dones, q_values, target_q_values):
-    for k in range(batch_size):
-        for j in range(no_agents):
-            q_values[j][k][actions[k][j]] = rewards[k][j] + arglist.gamma * (1.0 - float(dones[k][j])) * np.max(
-                target_q_values[j][k])
-    return q_values
 
 
 def main(arglist):
@@ -207,6 +212,10 @@ def main(arglist):
     no_agents = env.n
     batch_size = arglist.batch_size
     no_neighbors = arglist.num_neighbors
+    epsilon = arglist.epsilon
+    epsilon_decay = arglist.epsilon_decay
+    min_epsilon = arglist.min_epsilon
+    max_epsilon = arglist.max_epsilon
     k_lst = list(range(no_neighbors + 2))[2:]  # [2,3]
 
     # Velocity.x Velocity.y Pos.x Pos.y {Land.Pos.x Land.Pos.y}*10 {Ent.Pos.x Ent.Pos.y}*9
@@ -214,7 +223,8 @@ def main(arglist):
     num_actions = env.action_space[0].n
     feature_dim = num_features  # the size of node features
     model, model_t, callback = __build_conf()
-
+    optimizer = tf.keras.optimizers.Adam(lr=arglist.lr)
+    init_loss = np.inf
     # Results
     episode_rewards = [0.0]  # sum of rewards for all agents
     agent_rewards = [[0.0] for _ in range(env.n)]  # individual agent reward
@@ -238,21 +248,25 @@ def main(arglist):
         if episode_step % 3 == 0:
             adj = get_adj(obs_n, k_lst)
 
-        predictions = get_actions(to_tensor(np.array(obs_n)), adj, model)
-        actions = sample_actions_from_distr(predictions)
+        predictions = get_predictions(to_tensor(np.array(obs_n)), adj, model)
+        actions = get_actions(predictions, epsilon)
+
         # Observe next state, reward and done value
         new_obs_n, rew_n, done_n, _ = env.step(actions)
         done = all(done_n)
+        cooperative_reward = rew_n[0]
         # Store the data in the replay memory
-        replay_buffer.add(obs_n, adj, actions, rew_n, new_obs_n, done_n)
+        replay_buffer.add(obs_n, adj, actions, cooperative_reward, new_obs_n, done)
         obs_n = new_obs_n
 
+
+        episode_rewards[-1] += cooperative_reward
         for i, rew in enumerate(rew_n):
-            episode_rewards[-1] += rew
             agent_rewards[i][-1] += rew
 
         if done or terminal:
             obs_n = env.reset()
+            epsilon = min_epsilon + (max_epsilon - min_epsilon) * np.exp(-epsilon_decay * train_step/25)
             episode_step = 0
             episode_rewards.append(0)
             for a in agent_rewards:
@@ -288,15 +302,32 @@ def main(arglist):
             state = np.asarray(state)
             new_state = np.asarray(new_state)
 
-            # Calculate TD-target
-            q_values = model.predict([state, adj_n])
-            target_q_values = model_t.predict([new_state, adj_n])
-            tt = time.time()
-            q_values = update_q_values(arglist, batch_size, no_agents, actions, rewards, dones, q_values,
-                                       target_q_values)
-            print("Step %d - Update Q values time: %.3f " % (train_step, tt - time.time()))
+            # Calculate TD-target. The Model.predict() method returns numpy() array without taping the forward pass.
+            target_q_values = model_t([new_state, adj_n])
+            # Apply VDN to reduce the agent-dimension
+            target_q_tot = tf.reduce_sum(target_q_values, axis=1)
+            # Apply max(Q) to obtain the TD-target
+            max_q_tot = tf.reduce_max(target_q_tot, axis=-1)
 
-            model.fit([state, adj_n], q_values, epochs=50, batch_size=batch_size, verbose=0, callbacks=callback)
+            # Q_next = tf.stop_gradient(tf.reduce_max(self.Q_(s_t_next), axis=1)) # note we use Q_
+
+
+            y = rewards + (1. - dones) * arglist.gamma * max_q_tot
+
+            action_one_hot = tf.one_hot(actions, num_actions, 1.0, 0.0, name='action_one_hot')
+            with tf.GradientTape() as tape:
+                q_values = model([state, adj_n])
+                q_tot = tf.reduce_sum(q_values * action_one_hot, axis=1, name='q_acted')
+                pred = tf.reduce_sum(q_tot, axis=-1)
+                loss = tf.reduce_mean(tf.square(pred - tf.stop_gradient(y)), name="loss_mse")
+                gradients = tape.gradient(loss, model.trainable_variables)
+                local_clipped = clip_by_local_norm(gradients, 0.1)
+            optimizer.apply_gradients(zip(local_clipped, model.trainable_variables))
+
+            if loss.numpy() < init_loss:
+                tf.saved_model.save(model, os.path.abspath(os.path.join(
+                    os.path.dirname(__file__), '..', arglist.exp_name)))
+                init_loss = loss.numpy()
 
             # train target model
             weights = model.get_weights()
@@ -310,13 +341,14 @@ def main(arglist):
         if terminal and (len(episode_rewards) % arglist.save_rate == 0):
             with open(result_path, "a+") as f:
                 mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
-                            "mean_episode_reward" : round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
+                            "mean_episode_reward": round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
                             "time": round(time.time() - t_start, 3)}
-                print(mes_dict)
+
                 for item in list(mes_dict.values()):
                     f.write("%s\t" % item)
                 f.write("\n")
                 f.close()
+            print(mes_dict)
             t_start = time.time()
             # Keep track of final episode reward
             final_ep_rewards.append(np.mean(episode_rewards[-arglist.save_rate:]))
@@ -334,7 +366,6 @@ def main(arglist):
 
 
 if __name__ == '__main__':
-    print(tf.config.list_physical_devices('GPU'))
     np.set_printoptions(threshold=sys.maxsize)
     arglist = parse_args()
     create_seed(arglist.seed)
