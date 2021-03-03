@@ -34,7 +34,7 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
     parser.add_argument("--batch-size", type=int, default=128, help="number of episodes to optimize at the same time")
     parser.add_argument("--epsilon", type=float, default=1.0, help="epsilon exploration")
-    parser.add_argument("--epsilon-decay", type=float, default=0.003, help="epsilon decay")
+    parser.add_argument("--epsilon-decay", type=float, default=0.0003, help="epsilon decay")
     parser.add_argument("--min-epsilon", type=float, default=0.01, help="min epsilon")
     parser.add_argument("--max-epsilon", type=float, default=1.0, help="max epsilon")
 
@@ -48,7 +48,7 @@ def parse_args():
 
     # Evaluation
     parser.add_argument("--display", action="store_true", default=False)
-    parser.add_argument("--exp-name", type=str, default='GAT-exp', help="name of the experiment")
+    parser.add_argument("--exp-name", type=str, default='VDN-GAT-ELU_v2', help="name of the experiment")
     parser.add_argument("--save-rate", type=int, default=50,
                         help="save model once every time this many episodes are completed")
     parser.add_argument("--plots-dir", type=str, default="./learning_curves/",
@@ -131,20 +131,21 @@ def graph_net(arglist):
     Adj = Input(shape=(no_agents, no_agents), name="adj")
     gat = GATConv(
         arglist.num_neurons,
+        activation='elu',
         attn_heads=2,
-        concat_heads=False,
+        concat_heads=True,
     )([I1, Adj])
 
+    dense = Dense(arglist.num_neurons,
+                  kernel_initializer=tf.keras.initializers.he_uniform(),
+                  activation=tf.keras.layers.LeakyReLU(alpha=0.1),
+                  name="dense_layer")
+
+    last_dense = Dense(num_actions, kernel_initializer=tf.keras.initializers.he_uniform(),
+                       name="last_dense_layer")
     split = Lambda(lambda x: tf.squeeze(tf.split(x, num_or_size_splits=no_agents, axis=1), axis=2))(gat)
     outputs = []
     for j in list(range(no_agents)):
-        dense = Dense(arglist.num_neurons,
-                      kernel_initializer=tf.keras.initializers.he_uniform(),
-                      activation=tf.keras.layers.LeakyReLU(alpha=0.1),
-                      name="dense_layer")
-
-        last_dense = Dense(num_actions, kernel_initializer=tf.keras.initializers.he_uniform(),
-                           name="last_dense_layer")
         outputs.append(last_dense(dense(split[j])))
 
     V = tf.stack(outputs, axis=1)
@@ -202,40 +203,6 @@ def __build_conf():
     return model, model_t, callbacks
 
 
-# DEBUGGING
-def debugging_function(state, adj_n, model):
-    state = to_tensor(np.array(state))
-    state = tf.expand_dims(state, axis=0)
-    adj_n = tf.expand_dims(adj_n, axis=0)
-    # Debug intermediate outputs
-    get_layer_output02 = K.function([model.layers[0].input, model.layers[1].input], [model.layers[2].output])
-    layer_output2 = get_layer_output02([state, adj_n])
-
-    # Big Lambda
-    get_layer_output03 = K.function([model.layers[0].input, model.layers[1].input], [model.layers[3].output])
-    layer_output3 = get_layer_output03([state, adj_n])
-
-    # Slice lambda 04- 09
-    get_layer_output04 = K.function([model.layers[0].input, model.layers[1].input], [model.layers[4].output])
-    layer_output4 = get_layer_output04([state, adj_n])
-
-    get_layer_output05 = K.function([model.layers[0].input, model.layers[1].input], [model.layers[5].output])
-    layer_output5 = get_layer_output05([state, adj_n])
-
-    get_layer_output06 = K.function([model.layers[0].input, model.layers[1].input], [model.layers[6].output])
-    layer_output6 = get_layer_output06([state, adj_n])
-
-    # First Dense Layer
-    get_layer_output10 = K.function([model.layers[0].input, model.layers[1].input], [model.layers[10].output])
-    layer_output10 = get_layer_output10([state, adj_n])
-    # Last Layer
-    # get_layer_output11 = K.function([model.layers[4].output], [model.layers[11].output])
-    # layer_output11 = get_layer_output11(layer_output4)
-    # Concatanate layer
-    get_layer_output12 = K.function([model.layers[0].input, model.layers[1].input], [model.layers[12].output])
-    layer_output12 = get_layer_output12([state, adj_n])
-    pass
-
 def main(arglist):
     global num_actions, feature_dim, no_agents
     env = make_env(arglist.scenario)
@@ -263,7 +230,7 @@ def main(arglist):
     agent_rewards = [[0.0] for _ in range(env.n)]  # individual agent reward
     final_ep_rewards = []  # sum of rewards for training curve
     final_ep_ag_rewards = []  # agent rewards for training curve
-    result_path = os.path.abspath(os.path.join(os.getcwd(), os.pardir, arglist.exp_name + "/rewards-per-episode.csv"))
+    result_path = os.path.join(os.path.dirname(__file__), '..', "/rewards-per-episode.csv")
     if not os.path.exists(result_path):
         os.makedirs(os.path.dirname(result_path), exist_ok=True)
     replay_buffer = ReplayBuffer(arglist.max_buffer_size)  # Init Buffer
@@ -282,23 +249,24 @@ def main(arglist):
             adj = get_adj(obs_n, k_lst)
 
         predictions = get_predictions(to_tensor(np.array(obs_n)), adj, model)
-        # debugging_function(obs_n, adj, model)
         actions = get_actions(predictions, epsilon)
 
         # Observe next state, reward and done value
         new_obs_n, rew_n, done_n, _ = env.step(actions)
         done = all(done_n)
+        cooperative_reward = rew_n[0]
         # Store the data in the replay memory
-        replay_buffer.add(obs_n, adj, actions, rew_n, new_obs_n, done_n)
+        replay_buffer.add(obs_n, adj, actions, cooperative_reward, new_obs_n, done)
         obs_n = new_obs_n
 
-        episode_rewards[-1] += rew_n[0]
+
+        episode_rewards[-1] += cooperative_reward
         for i, rew in enumerate(rew_n):
             agent_rewards[i][-1] += rew
 
         if done or terminal:
             obs_n = env.reset()
-            epsilon = min_epsilon + (max_epsilon - min_epsilon) * np.exp(-epsilon_decay * train_step/4)
+            epsilon = min_epsilon + (max_epsilon - min_epsilon) * np.exp(-epsilon_decay * train_step/25)
             episode_step = 0
             episode_rewards.append(0)
             for a in agent_rewards:
@@ -334,15 +302,21 @@ def main(arglist):
             state = np.asarray(state)
             new_state = np.asarray(new_state)
 
-            # Calculate TD-target. The Model.predict() method returns numpy() array without taping the forward pass.
-            target_q_values = model_t([new_state, adj_n])
-            max_q_next_by_target = tf.reduce_max(target_q_values, axis=-1)
-            y = rewards + (1. - dones) * arglist.gamma * max_q_next_by_target
-            action_one_hot = tf.one_hot(actions, num_actions, 1.0, 0.0, name='action_one_hot')
             with tf.GradientTape() as tape:
+                # Calculate TD-target. The Model.predict() method returns numpy() array without taping the forward pass.
+                target_q_values = model_t([new_state, adj_n])
+                # Apply max(Q) to obtain the TD-target
+                target_q_tot = tf.reduce_max(target_q_values, axis=-1)
+                # Apply VDN to reduce the agent-dimension
+                max_q_tot = tf.reduce_sum(target_q_tot, axis=-1)
+                y = rewards + (1. - dones) * arglist.gamma * max_q_tot
+
+                # Predictions
+                action_one_hot = tf.one_hot(actions, num_actions, name='action_one_hot')
                 q_values = model([state, adj_n])
-                pred = tf.reduce_sum(q_values * action_one_hot, axis=-1, name='q_acted')
-                loss = tf.reduce_mean(tf.square(pred - tf.stop_gradient(y)), name="loss_mse")
+                q_tot = tf.reduce_sum(q_values * action_one_hot, axis=-1, name='q_acted')
+                pred = tf.reduce_sum(q_tot, axis=1)
+                loss = tf.reduce_mean(0.5 * tf.square(pred - tf.stop_gradient(y)), name="loss_mse")
                 gradients = tape.gradient(loss, model.trainable_variables)
                 local_clipped = clip_by_local_norm(gradients, 0.1)
             optimizer.apply_gradients(zip(local_clipped, model.trainable_variables))

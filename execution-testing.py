@@ -16,16 +16,14 @@ def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
-    parser.add_argument("--no-agents", type=int, default=5, help="number of agents")
+    parser.add_argument("--no-agents", type=int, default=7, help="number of agents")
     parser.add_argument("--max-episode-len", type=int, default=50, help="maximum episode length")
-    parser.add_argument("--num-episodes", type=int, default=30000, help="number of episodes")
     parser.add_argument("--num-neighbors", type=int, default=2, help="number of neigbors to cooperate")
 
 
     # Evaluation
     parser.add_argument("--display", action="store_true", default=True)
-    parser.add_argument("--exp-name", type=str, default='GAT-exp', help="name of the experiment")
-    parser.add_argument("--save-rate", type=int, default=200, help="save model once every time this many episodes are completed")
+    parser.add_argument("--exp-name", type=str, default='igat7', help="name of the experiment")
     parser.add_argument("--plots-dir", type=str, default="./learning_curves/", help="directory where plot data is saved")
 
     return parser.parse_args()
@@ -58,7 +56,6 @@ def get_adj(arr, k_lst):
     Take as input the new obs. In position 4 to k, there are the x and y coordinates of each agent
     Make an adjacency matrix, where each agent communicates with the k closest ones
     """
-    # Try both with normal and sparce matrix
     points = [i[2:4] for i in arr]
     adj = np.zeros((no_agents, no_agents), dtype=float)
     # construct a kd-tree
@@ -77,12 +74,11 @@ def get_adj(arr, k_lst):
     return adj
 
 
-def get_actions(graph, adj, gcn_net):
+def get_predictions(graph, adj, gcn_net):
     graph = tf.expand_dims(graph, axis=0)
     adj = tf.expand_dims(adj, axis=0)
     preds = gcn_net.predict([graph, adj])
     return preds
-
 
 
 
@@ -98,24 +94,25 @@ def main(arglist):
     no_neighbors = arglist.num_neighbors
     k_lst = list(range(no_neighbors + 2))[2:]  # [2,3]
 
-
     # Velocity.x Velocity.y Pos.x Pos.y {Land.Pos.x Land.Pos.y}*10 {Ent.Pos.x Ent.Pos.y}*9
     num_features = obs_shape_n[0].shape[0]
     num_actions = env.action_space[0].n
     feature_dim = num_features  # the size of node features
-    path = os.path.abspath(os.path.join(os.getcwd(), 'gat5/hidden-untis=16-batch-size=512', "cp.ckpt"))
-    model = keras.models.load_model(path)
+    model = keras.models.load_model(arglist.exp_name)
 
     obs_n = env.reset()
     adj = get_adj(obs_n, k_lst)
     reward_total = []
-    print('Starting iterations...')
     for i in range(arglist.max_episode_len):
         if i % 3 == 0:
             adj = get_adj(obs_n, k_lst)
 
-        predictions = get_actions(to_tensor(np.array(obs_n)), adj, model)
-        actions = [np.argmax(prediction) for prediction in predictions]
+        predictions = get_predictions(to_tensor(np.array(obs_n)), adj, model)
+        predictions = tf.squeeze(predictions, axis=0)
+        print("predictions: %s" % tf.shape(predictions))
+
+        actions = [tf.argmax(prediction, axis=-1).numpy() for prediction in predictions]
+
         # Observe next state, reward and done value
         new_obs_n, rew_n, done_n, _ = env.step(actions)
         obs_n = new_obs_n
@@ -127,10 +124,7 @@ def main(arglist):
             print("Reward is %.3f" % sum(rew_n))
             env.render()
             continue
-    path = os.path.abspath(os.path.join(os.getcwd(),os.pardir, "results", "gat5", "csvs"))
-    if not os.path.exists(path):
-        os.makedirs(path)
-    pd.DataFrame(reward_total).to_csv(path + "/rewards.csv")
+    pd.DataFrame(reward_total).to_csv(arglist.exp_name + "/rewards.csv")
     print("Final Reward is %.3f " % sum(reward_total))
 
 
