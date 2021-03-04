@@ -6,6 +6,7 @@ import time
 
 import numpy as np
 import tensorflow as tf
+from keras.layers import Lambda
 import keras
 from scipy.spatial import cKDTree
 from spektral.layers import GATConv
@@ -16,14 +17,14 @@ def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
-    parser.add_argument("--no-agents", type=int, default=7, help="number of agents")
+    parser.add_argument("--no-agents", type=int, default=4, help="number of agents")
     parser.add_argument("--max-episode-len", type=int, default=50, help="maximum episode length")
     parser.add_argument("--num-neighbors", type=int, default=2, help="number of neigbors to cooperate")
-
+    parser.add_argument("--use-gnn", type=bool, default=False, help="use of gnn netwrok or not")
 
     # Evaluation
     parser.add_argument("--display", action="store_true", default=True)
-    parser.add_argument("--exp-name", type=str, default='igat7', help="name of the experiment")
+    parser.add_argument("--exp-name", type=str, default='IQL', help="name of the experiment")
     parser.add_argument("--plots-dir", type=str, default="./learning_curves/", help="directory where plot data is saved")
 
     return parser.parse_args()
@@ -74,10 +75,17 @@ def get_adj(arr, k_lst):
     return adj
 
 
-def get_predictions(graph, adj, gcn_net):
-    graph = tf.expand_dims(graph, axis=0)
-    adj = tf.expand_dims(adj, axis=0)
-    preds = gcn_net.predict([graph, adj])
+def get_predictions(graph, adj, net):
+    if arglist.use_gnn:
+        graph = tf.expand_dims(graph, axis=0)
+        adj = tf.expand_dims(adj, axis=0)
+        preds = net.predict([graph, adj])
+    else:
+        state = Lambda(lambda x: tf.expand_dims(x, axis=0))(graph)
+        # [Batch_size, 1, Features]
+        splits = tf.split(state, num_or_size_splits=no_agents, axis=1)
+        inputs = [tf.squeeze(x, axis=1) for x in splits]
+        preds = net.predict(inputs)
     return preds
 
 

@@ -63,7 +63,6 @@ def to_tensor(arg):
 
 
 def create_seed(seed):
-    seed = int(time.time())
     random.seed(seed)
     np.random.seed(seed)
     tf.random.set_seed(seed)
@@ -348,9 +347,6 @@ def main(arglist):
             t_start = time.time()
             # Keep track of final episode reward
             final_ep_rewards.append(np.mean(episode_rewards[-arglist.save_rate:]))
-            for rew in agent_rewards:
-                final_ep_ag_rewards.append(np.mean(rew[-arglist.save_rate:]))
-
             # saves final episode reward for plotting training curve later
             if len(episode_rewards) > arglist.num_episodes:
                 if not os.path.exists(arglist.plots_dir):
@@ -362,7 +358,6 @@ def main(arglist):
 
 
 if __name__ == '__main__':
-    np.set_printoptions(threshold=sys.maxsize)
     arglist = parse_args()
     create_seed(arglist.seed)
     main(arglist)

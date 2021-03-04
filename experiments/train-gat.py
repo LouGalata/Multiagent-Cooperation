@@ -2,13 +2,12 @@ import argparse
 import os
 import pickle
 import random
-import sys
 import time
 
+import keras
 import numpy as np
 import tensorflow as tf
-import keras.backend as K
-from keras.layers import Input, Lambda, Dense, concatenate, merge
+from keras.layers import Input, Lambda, Dense
 from keras.models import Model
 from scipy.spatial import cKDTree
 from spektral.layers import GATConv
@@ -63,7 +62,6 @@ def to_tensor(arg):
 
 
 def create_seed(seed):
-    seed = int(time.time())
     random.seed(seed)
     np.random.seed(seed)
     tf.random.set_seed(seed)
@@ -85,22 +83,6 @@ def make_env(scenario_name, benchmark=False):
         env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
     return env
 
-
-def __get_callbacks(logdir):
-    callbacks = [tf.keras.callbacks.TerminateOnNaN(),
-                 tf.keras.callbacks.EarlyStopping(monitor='loss',
-                                                  patience=5),
-                 tf.keras.callbacks.TensorBoard(logdir, update_freq="epoch", profile_batch=0),
-
-                 tf.keras.callbacks.ModelCheckpoint(
-                     filepath=os.path.join(logdir, "cp.ckpt"),
-                     save_best_only=True,
-                     save_freq=25,
-                     save_weights_only=False,
-                     monitor='loss',
-                     verbose=0)
-                 ]
-    return callbacks
 
 
 def get_adj(arr, k_lst):
@@ -191,16 +173,10 @@ def get_actions(predictions, epsilon):
 
 
 def __build_conf():
-    hparams_log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', arglist.exp_name))
-    logdir = os.path.join(hparams_log_dir, "hidden-units=%d-batch-size=%d" %
-                          (arglist.num_neurons, arglist.batch_size))
-
     model = graph_net(arglist)
     model_t = graph_net(arglist)
     model_t.set_weights(model.get_weights())
-
-    callbacks = __get_callbacks(logdir)
-    return model, model_t, callbacks
+    return model, model_t
 
 
 def main(arglist):
@@ -222,14 +198,12 @@ def main(arglist):
     num_features = obs_shape_n[0].shape[0]
     num_actions = env.action_space[0].n
     feature_dim = num_features  # the size of node features
-    model, model_t, callback = __build_conf()
+    model, model_t = __build_conf()
     optimizer = tf.keras.optimizers.Adam(lr=arglist.lr)
     init_loss = np.inf
     # Results
     episode_rewards = [0.0]  # sum of rewards for all agents
-    agent_rewards = [[0.0] for _ in range(env.n)]  # individual agent reward
     final_ep_rewards = []  # sum of rewards for training curve
-    final_ep_ag_rewards = []  # agent rewards for training curve
     result_path = os.path.join(os.path.dirname(__file__), '..', "/rewards-per-episode.csv")
     if not os.path.exists(result_path):
         os.makedirs(os.path.dirname(result_path), exist_ok=True)
@@ -259,18 +233,13 @@ def main(arglist):
         replay_buffer.add(obs_n, adj, actions, cooperative_reward, new_obs_n, done)
         obs_n = new_obs_n
 
-
         episode_rewards[-1] += cooperative_reward
-        for i, rew in enumerate(rew_n):
-            agent_rewards[i][-1] += rew
 
         if done or terminal:
             obs_n = env.reset()
-            epsilon = min_epsilon + (max_epsilon - min_epsilon) * np.exp(-epsilon_decay * train_step/25)
+            epsilon = min_epsilon + (max_epsilon - min_epsilon) * np.exp(-epsilon_decay * train_step / 25)
             episode_step = 0
             episode_rewards.append(0)
-            for a in agent_rewards:
-                a.append(0)
 
         # increment global step counter
         train_step += 1
@@ -349,8 +318,6 @@ def main(arglist):
             t_start = time.time()
             # Keep track of final episode reward
             final_ep_rewards.append(np.mean(episode_rewards[-arglist.save_rate:]))
-            for rew in agent_rewards:
-                final_ep_ag_rewards.append(np.mean(rew[-arglist.save_rate:]))
 
             # saves final episode reward for plotting training curve later
             if len(episode_rewards) > arglist.num_episodes:
@@ -363,7 +330,6 @@ def main(arglist):
 
 
 if __name__ == '__main__':
-    np.set_printoptions(threshold=sys.maxsize)
     arglist = parse_args()
     create_seed(arglist.seed)
     main(arglist)
