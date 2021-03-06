@@ -7,14 +7,13 @@ import time
 
 import numpy as np
 import tensorflow as tf
-import keras.backend as K
-from keras.layers import Input, Lambda, Dense, concatenate, merge
+from keras.layers import Input, Lambda, Dense
 from keras.models import Model
 from scipy.spatial import cKDTree
-from spektral.layers import GATConv
+from spektral.layers import GCNConv
 from tensorflow.keras import Sequential
 
-from replay_buffer import ReplayBuffer
+from utils.replay_buffer import ReplayBuffer
 
 
 def parse_args():
@@ -32,7 +31,7 @@ def parse_args():
 
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
-    parser.add_argument("--batch-size", type=int, default=128, help="number of episodes to optimize at the same time")
+    parser.add_argument("--batch-size", type=int, default=512, help="number of episodes to optimize at the same time")
     parser.add_argument("--epsilon", type=float, default=1.0, help="epsilon exploration")
     parser.add_argument("--epsilon-decay", type=float, default=0.0003, help="epsilon decay")
     parser.add_argument("--min-epsilon", type=float, default=0.01, help="min epsilon")
@@ -48,11 +47,9 @@ def parse_args():
 
     # Evaluation
     parser.add_argument("--display", action="store_true", default=False)
-    parser.add_argument("--exp-name", type=str, default='VDN-GAT-ELU_v2', help="name of the experiment")
+    parser.add_argument("--exp-name", type=str, default='gcn6', help="name of the experiment")
     parser.add_argument("--save-rate", type=int, default=50,
                         help="save model once every time this many episodes are completed")
-    parser.add_argument("--plots-dir", type=str, default="./learning_curves/",
-                        help="directory where plot data is saved")
 
     return parser.parse_args()
 
@@ -120,42 +117,39 @@ def get_adj(arr, k_lst):
         # adjacency[cnt, ii] = 1.0
 
     # add self-loops and symmetric normalization
-    adj = GATConv.preprocess(adj).astype('f4')
+    adj = GCNConv.preprocess(adj).astype('f4')
     # Batch Mode needs dense inputs
     return adj
 
 
-def graph_net(arglist):
-    I1 = Input(shape=(no_agents, feature_dim), name="graph_input")
+def GCN_net(arglist):
+    I1 = Input(shape=(no_agents, feature_dim), name="gcn_input")
     Adj = Input(shape=(no_agents, no_agents), name="adj")
-    gat = GATConv(
-        arglist.num_neurons,
-        activation='elu',
-        attn_heads=4,
-        concat_heads=True,
-    )([I1, Adj])
+    gcn = GCNConv(arglist.num_neurons, kernel_initializer=tf.keras.initializers.he_uniform(),
+                  activation=tf.keras.layers.LeakyReLU(alpha=0.1),
+                  use_bias=False,
+                  name="Gcn")([I1, Adj])
 
+    dense = Dense(arglist.num_neurons,
+                  kernel_initializer=tf.keras.initializers.he_uniform(),
+                  activation=tf.keras.layers.LeakyReLU(alpha=0.1),
+                  name="dense_layer")
 
-    split = Lambda(lambda x: tf.squeeze(tf.split(x, num_or_size_splits=no_agents, axis=1), axis=2))(gat)
+    last_dense = Dense(num_actions, kernel_initializer=tf.keras.initializers.he_uniform(),
+                       name="last_dense_layer")
+    split = Lambda(lambda x: tf.squeeze(tf.split(x, num_or_size_splits=no_agents, axis=1), axis=2))(gcn)
     outputs = []
     for j in list(range(no_agents)):
-        dense = Dense(arglist.num_neurons,
-                      kernel_initializer=tf.keras.initializers.he_uniform(),
-                      activation=tf.keras.layers.LeakyReLU(alpha=0.1))
-
-        last_dense = Dense(num_actions, kernel_initializer=tf.keras.initializers.he_uniform())
         outputs.append(last_dense(dense(split[j])))
 
     V = tf.stack(outputs, axis=1)
     model = Model([I1, Adj], V)
-    model._name = "final_network"
 
     model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=arglist.lr),
                   loss=tf.keras.losses.MeanSquaredError(),
                   metrics=['acc']
                   )
-
-    tf.keras.utils.plot_model(model, show_shapes=True)
+    model._name = "final_network"
     return model
 
 
@@ -189,16 +183,10 @@ def get_actions(predictions, epsilon):
 
 
 def __build_conf():
-    hparams_log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', arglist.exp_name))
-    logdir = os.path.join(hparams_log_dir, "hidden-units=%d-batch-size=%d" %
-                          (arglist.num_neurons, arglist.batch_size))
-
-    model = graph_net(arglist)
-    model_t = graph_net(arglist)
+    model = GCN_net(arglist)
+    model_t = GCN_net(arglist)
     model_t.set_weights(model.get_weights())
-
-    callbacks = __get_callbacks(logdir)
-    return model, model_t, callbacks
+    return model, model_t
 
 
 def main(arglist):
@@ -210,27 +198,28 @@ def main(arglist):
     no_agents = env.n
     batch_size = arglist.batch_size
     no_neighbors = arglist.num_neighbors
+    k_lst = list(range(no_neighbors + 2))[2:]  # [2,3]
     epsilon = arglist.epsilon
     epsilon_decay = arglist.epsilon_decay
     min_epsilon = arglist.min_epsilon
     max_epsilon = arglist.max_epsilon
-    k_lst = list(range(no_neighbors + 2))[2:]  # [2,3]
 
     # Velocity.x Velocity.y Pos.x Pos.y {Land.Pos.x Land.Pos.y}*10 {Ent.Pos.x Ent.Pos.y}*9
     num_features = obs_shape_n[0].shape[0]
     num_actions = env.action_space[0].n
     feature_dim = num_features  # the size of node features
-    model, model_t, callback = __build_conf()
+    model, model_t = __build_conf()
     optimizer = tf.keras.optimizers.Adam(lr=arglist.lr)
     init_loss = np.inf
+
     # Results
     episode_rewards = [0.0]  # sum of rewards for all agents
-    agent_rewards = [[0.0] for _ in range(env.n)]  # individual agent reward
     final_ep_rewards = []  # sum of rewards for training curve
-    final_ep_ag_rewards = []  # agent rewards for training curve
-    result_path = os.path.join(os.path.dirname(__file__), '..', "/rewards-per-episode.csv")
+    result_path = os.path.join("results", arglist.exp_name)
+    res = os.path.join(result_path, " %s.csv" % arglist.exp_name)
     if not os.path.exists(result_path):
-        os.makedirs(os.path.dirname(result_path), exist_ok=True)
+        os.makedirs(result_path)
+
     replay_buffer = ReplayBuffer(arglist.max_buffer_size)  # Init Buffer
     episode_step = 0
     train_step = 0
@@ -248,7 +237,6 @@ def main(arglist):
 
         predictions = get_predictions(to_tensor(np.array(obs_n)), adj, model)
         actions = get_actions(predictions, epsilon)
-
         # Observe next state, reward and done value
         new_obs_n, rew_n, done_n, _ = env.step(actions)
         done = all(done_n)
@@ -257,18 +245,13 @@ def main(arglist):
         replay_buffer.add(obs_n, adj, actions, cooperative_reward, new_obs_n, done)
         obs_n = new_obs_n
 
-
         episode_rewards[-1] += cooperative_reward
-        for i, rew in enumerate(rew_n):
-            agent_rewards[i][-1] += rew
 
         if done or terminal:
             obs_n = env.reset()
-            epsilon = min_epsilon + (max_epsilon - min_epsilon) * np.exp(-epsilon_decay * train_step/25)
+            epsilon = min_epsilon + (max_epsilon - min_epsilon) * np.exp(-epsilon_decay * train_step / 25)
             episode_step = 0
             episode_rewards.append(0)
-            for a in agent_rewards:
-                a.append(0)
 
         # increment global step counter
         train_step += 1
@@ -300,6 +283,7 @@ def main(arglist):
             state = np.asarray(state)
             new_state = np.asarray(new_state)
 
+            # Calculate TD-target
             with tf.GradientTape() as tape:
                 # Calculate TD-target. The Model.predict() method returns numpy() array without taping the forward pass.
                 target_q_values = model_t([new_state, adj_n])
@@ -320,9 +304,16 @@ def main(arglist):
             optimizer.apply_gradients(zip(local_clipped, model.trainable_variables))
 
             if loss.numpy() < init_loss:
-                tf.saved_model.save(model, os.path.abspath(os.path.join(
-                    os.path.dirname(__file__), '..', arglist.exp_name)))
+                tf.saved_model.save(model, result_path)
                 init_loss = loss.numpy()
+
+            # train target model
+            weights = model.get_weights()
+            target_weights = model_t.get_weights()
+
+            for w in range(len(weights)):
+                target_weights[w] = arglist.tau * weights[w] + (1 - arglist.tau) * target_weights[w]
+            model_t.set_weights(target_weights)
 
             # train target model
             weights = model.get_weights()
@@ -338,26 +329,26 @@ def main(arglist):
                 mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
                             "mean_episode_reward": round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
                             "time": round(time.time() - t_start, 3)}
-
+                print(mes_dict)
                 for item in list(mes_dict.values()):
                     f.write("%s\t" % item)
                 f.write("\n")
                 f.close()
-            print(mes_dict)
             t_start = time.time()
             # Keep track of final episode reward
             final_ep_rewards.append(np.mean(episode_rewards[-arglist.save_rate:]))
+
             # saves final episode reward for plotting training curve later
             if len(episode_rewards) > arglist.num_episodes:
-                if not os.path.exists(arglist.plots_dir):
-                    os.makedirs(arglist.plots_dir)
-                rew_file_name = arglist.plots_dir + '/' + arglist.exp_name + '_rewards.pkl'
+                rew_file_name = os.path.join("plots", arglist.exp_name + '_rewards.pkl')
                 with open(rew_file_name, 'wb') as fp:
                     pickle.dump(final_ep_rewards, fp)
                 break
 
 
 if __name__ == '__main__':
+    print(tf.config.list_physical_devices('GPU'))
+    np.set_printoptions(threshold=sys.maxsize)
     arglist = parse_args()
     create_seed(arglist.seed)
     main(arglist)
