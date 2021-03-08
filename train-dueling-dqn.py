@@ -355,7 +355,7 @@ def main(arglist):
             # saves final episode reward for plotting training curve later
             if len(episode_rewards) > arglist.num_episodes:
                 rew_file_name = os.path.join("plots", arglist.exp_name + '_rewards.pkl')
-                with open(rew_file_name, 'wb') as fp:
+                with open(rew_file_name, 'wb+') as fp:
                     pickle.dump(final_ep_rewards, fp)
                 break
 

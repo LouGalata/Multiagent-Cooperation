@@ -1,5 +1,4 @@
 import argparse
-import os
 import pandas as pd
 import sys
 import time
@@ -17,15 +16,16 @@ def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
-    parser.add_argument("--no-agents", type=int, default=4, help="number of agents")
+    parser.add_argument("--no-agents", type=int, default=6, help="number of agents")
     parser.add_argument("--max-episode-len", type=int, default=50, help="maximum episode length")
     parser.add_argument("--num-neighbors", type=int, default=2, help="number of neigbors to cooperate")
     parser.add_argument("--use-gnn", type=bool, default=False, help="use of gnn netwrok or not")
+    parser.add_argument("--use-rnn", type=bool, default=False, help="use of rnn netwrok or not")
+    parser.add_argument("--history-size", type=int, default=4, help="timestep of Rnn memory")
 
     # Evaluation
     parser.add_argument("--display", action="store_true", default=True)
-    parser.add_argument("--exp-name", type=str, default='IQL', help="name of the experiment")
-    parser.add_argument("--plots-dir", type=str, default="./learning_curves/", help="directory where plot data is saved")
+    parser.add_argument("--exp-name", type=str, default='iql6', help="name of the experiment")
 
     return parser.parse_args()
 
@@ -75,6 +75,21 @@ def get_adj(arr, k_lst):
     return adj
 
 
+def reformat_input(input):
+    splits = tf.split(input, num_or_size_splits=no_agents, axis=1)
+    return [tf.squeeze(x, axis=1) for x in splits]
+
+
+def refresh_history(history, state_next):
+    history[:, :-1] = history[:, 1:]
+    history[:, -1] = state_next
+    return history
+
+
+def reshape_state(state, history_size):
+    return np.tile(np.expand_dims(state, axis=1), (1, history_size, 1))
+
+
 def get_predictions(graph, adj, net):
     if arglist.use_gnn:
         graph = tf.expand_dims(graph, axis=0)
@@ -82,10 +97,17 @@ def get_predictions(graph, adj, net):
         preds = net.predict([graph, adj])
     else:
         state = Lambda(lambda x: tf.expand_dims(x, axis=0))(graph)
-        # [Batch_size, 1, Features]
-        splits = tf.split(state, num_or_size_splits=no_agents, axis=1)
-        inputs = [tf.squeeze(x, axis=1) for x in splits]
+        if arglist.use_rnn:
+            inputs = reformat_input(state)
+        else:
+            # [Batch_size, 1, Features]
+            splits = tf.split(state, num_or_size_splits=no_agents, axis=1)
+            inputs = [tf.squeeze(x, axis=1) for x in splits]
         preds = net.predict(inputs)
+
+
+
+
     return preds
 
 
@@ -106,15 +128,14 @@ def main(arglist):
     num_features = obs_shape_n[0].shape[0]
     num_actions = env.action_space[0].n
     feature_dim = num_features  # the size of node features
-    model = keras.models.load_model(arglist.exp_name)
+    model = keras.models.load_model("results/" + arglist.exp_name)
 
     obs_n = env.reset()
     adj = get_adj(obs_n, k_lst)
+    if arglist.use_rnn:
+        obs_n = reshape_state(obs_n, arglist.history_size)
     reward_total = []
     for i in range(arglist.max_episode_len):
-        if i % 3 == 0:
-            adj = get_adj(obs_n, k_lst)
-
         predictions = get_predictions(to_tensor(np.array(obs_n)), adj, model)
         predictions = tf.squeeze(predictions, axis=0)
         print("predictions: %s" % tf.shape(predictions))
@@ -123,6 +144,9 @@ def main(arglist):
 
         # Observe next state, reward and done value
         new_obs_n, rew_n, done_n, _ = env.step(actions)
+        adj = get_adj(new_obs_n, k_lst)
+        if arglist.use_rnn:
+            new_obs_n = refresh_history(np.copy(obs_n), new_obs_n)
         obs_n = new_obs_n
         reward_total.append(sum(rew_n))
 
@@ -132,12 +156,10 @@ def main(arglist):
             print("Reward is %.3f" % sum(rew_n))
             env.render()
             continue
-    pd.DataFrame(reward_total).to_csv(arglist.exp_name + "/rewards.csv")
+    pd.DataFrame(reward_total).to_csv("results/" + arglist.exp_name + "/testing_rewards.csv")
     print("Final Reward is %.3f " % sum(reward_total))
 
 
 if __name__ == '__main__':
-    print(tf.config.list_physical_devices('GPU'))
-    np.set_printoptions(threshold=sys.maxsize)
     arglist = parse_args()
     main(arglist)

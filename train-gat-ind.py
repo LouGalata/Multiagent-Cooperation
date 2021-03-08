@@ -19,7 +19,7 @@ def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
-    parser.add_argument("--no-agents", type=int, default=6, help="number of agents")
+    parser.add_argument("--no-agents", type=int, default=5, help="number of agents")
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--num-episodes", type=int, default=30000, help="number of episodes")
     parser.add_argument("--num-neighbors", type=int, default=2, help="number of neigbors to cooperate")
@@ -32,7 +32,7 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
     parser.add_argument("--batch-size", type=int, default=128, help="number of episodes to optimize at the same time")
     parser.add_argument("--epsilon", type=float, default=1.0, help="epsilon exploration")
-    parser.add_argument("--epsilon-decay", type=float, default=0.0003, help="epsilon decay")
+    parser.add_argument("--epsilon-decay", type=float, default=0.001, help="epsilon decay")
     parser.add_argument("--min-epsilon", type=float, default=0.01, help="min epsilon")
     parser.add_argument("--max-epsilon", type=float, default=1.0, help="max epsilon")
 
@@ -43,10 +43,11 @@ def parse_args():
     # Q-learning training parameters
     parser.add_argument("--gamma", type=float, default=0.95, help="discount factor")
     parser.add_argument("--tau", type=float, default=0.01, help="smooth weights copy to target model")
+    parser.add_argument("--soft-update", type=bool, default=True, help="Mode of updating the target network")
 
     # Evaluation
     parser.add_argument("--display", action="store_true", default=False)
-    parser.add_argument("--exp-name", type=str, default='VDN-GAT-ELU_v2', help="name of the experiment")
+    parser.add_argument("--exp-name", type=str, default='self-igat5', help="name of the experiment")
     parser.add_argument("--save-rate", type=int, default=50,
                         help="save model once every time this many episodes are completed")
 
@@ -224,7 +225,7 @@ def main(arglist):
     agent_rewards = [[0.0] for _ in range(env.n)]  # individual agent reward
     final_ep_rewards = []  # sum of rewards for training curve
     result_path = os.path.join("results",  arglist.exp_name)
-    res = os.path.join(result_path, " %s.csv" % arglist.exp_name)
+    res = os.path.join(result_path, "%s.csv" % arglist.exp_name)
     if not os.path.exists(result_path):
         os.makedirs(result_path)
     replay_buffer = ReplayBuffer(arglist.max_buffer_size)  # Init Buffer
@@ -296,20 +297,31 @@ def main(arglist):
             state = np.asarray(state)
             new_state = np.asarray(new_state)
 
+            # OK: act_one_hot = tf.one_hot(self.action, self.actions_num, on_value=1.0, off_value=0.0)
+            # self.mask_one = tf.ones_like(act_one_hot, tf.float32)
+            # OK: current_q = tf.reduce_sum(self.Q_value([state_float]) * act_one_hot, axis=1)
+            # prediction = self.Q_hat([state_next_float]) * self.mask_one
+            # target_q = tf.reduce_max(prediction, axis=1)
+            # # Computing the NN ERROR as described in the DQN paper.
+            # target_val = tf.stop_gradient(self.reward + (self.discount_rate * target_q) * (1 - self.done))
             with tf.GradientTape() as tape:
                 # Calculate TD-target. The Model.predict() method returns numpy() array without taping the forward pass.
-                target_q_values = model_t([new_state, adj_n])
-                # Apply max(Q) to obtain the TD-target
-                target_q_tot = tf.reduce_max(target_q_values, axis=-1)
-                # Apply VDN to reduce the agent-dimension
-                max_q_tot = tf.reduce_sum(target_q_tot, axis=-1)
-                y = rewards + (1. - dones) * arglist.gamma * max_q_tot
 
                 # Predictions
                 action_one_hot = tf.one_hot(actions, num_actions, name='action_one_hot')
                 q_values = model([state, adj_n])
                 q_tot = tf.reduce_sum(q_values * action_one_hot, axis=-1, name='q_acted')
                 pred = tf.reduce_sum(q_tot, axis=1)
+
+                # Targets
+                mask_one = tf.ones_like(action_one_hot, tf.float32)
+                target_q_values = model_t([new_state, adj_n]) * mask_one
+                # Apply max(Q) to obtain the TD-target
+                target_q_tot = tf.reduce_max(target_q_values, axis=-1)
+                # Apply VDN to reduce the agent-dimension
+                max_q_tot = tf.reduce_sum(target_q_tot, axis=-1)
+                y = rewards + (1. - dones) * arglist.gamma * max_q_tot
+
                 loss = tf.reduce_mean(0.5 * tf.square(pred - tf.stop_gradient(y)), name="loss_mse")
                 gradients = tape.gradient(loss, model.trainable_variables)
                 local_clipped = clip_by_local_norm(gradients, 0.1)
@@ -320,12 +332,15 @@ def main(arglist):
                 init_loss = loss.numpy()
 
             # train target model
-            weights = model.get_weights()
-            target_weights = model_t.get_weights()
+            if arglist.soft_update:
+                weights = model.get_weights()
+                target_weights = model_t.get_weights()
 
-            for w in range(len(weights)):
-                target_weights[w] = arglist.tau * weights[w] + (1 - arglist.tau) * target_weights[w]
-            model_t.set_weights(target_weights)
+                for w in range(len(weights)):
+                    target_weights[w] = arglist.tau * weights[w] + (1 - arglist.tau) * target_weights[w]
+                model_t.set_weights(target_weights)
+            elif train_step % 200 == 0:
+                model_t.set_weights(model.get_weights())
 
         # display training output
         if terminal and (len(episode_rewards) % arglist.save_rate == 0):
