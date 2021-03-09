@@ -32,6 +32,9 @@ def parse_args():
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
     parser.add_argument("--batch-size", type=int, default=512, help="number of episodes to optimize at the same time")
+    parser.add_argument("--soft-update", type=bool, default=True, help="Mode of updating the target network")
+
+
     parser.add_argument("--epsilon", type=float, default=1.0, help="epsilon exploration")
     parser.add_argument("--epsilon-decay", type=float, default=0.0003, help="epsilon decay")
     parser.add_argument("--min-epsilon", type=float, default=0.01, help="min epsilon")
@@ -304,13 +307,16 @@ def main(arglist):
                 tf.saved_model.save(model, result_path)
                 init_loss = loss.numpy()
 
-            # train target model
+        # train target model
+        if arglist.soft_update:
             weights = model.get_weights()
             target_weights = model_t.get_weights()
 
             for w in range(len(weights)):
                 target_weights[w] = arglist.tau * weights[w] + (1 - arglist.tau) * target_weights[w]
             model_t.set_weights(target_weights)
+        elif train_step % 200 == 0:
+            model_t.set_weights(model.get_weights())
 
         # display training output
         if terminal and (len(episode_rewards) % arglist.save_rate == 0):
