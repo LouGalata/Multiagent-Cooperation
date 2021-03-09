@@ -1,7 +1,6 @@
 import argparse
 import os
 import time
-import random
 
 import numpy as np
 import tensorflow as tf

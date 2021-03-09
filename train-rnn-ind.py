@@ -1,7 +1,5 @@
 import argparse
 import os
-import pickle
-import random
 import time
 
 import numpy as np
@@ -14,23 +12,25 @@ from models.attention import SelfAttention
 from utils.replay_buffer_iql import ReplayBuffer
 from utils.util import Utility
 
+
 def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
     parser.add_argument("--no-agents", type=int, default=5, help="number of agents")
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
-    parser.add_argument("--num-episodes", type=int, default=30000, help="number of episodes")
-    parser.add_argument("--num-neighbors", type=int, default=2, help="number of neigbors to cooperate")
+    parser.add_argument("--no-episodes", type=int, default=30000, help="number of episodes")
+    parser.add_argument("--no-neighbors", type=int, default=2, help="number of neigbors to cooperate")
     parser.add_argument("--seed", type=int, default=1, help="seed")
 
     # Experience Replay
-    parser.add_argument("--max-buffer-size", type=int, default=20000, help="maximum buffer capacity")
+    parser.add_argument("--max-buffer-size", type=int, default=500000, help="maximum buffer capacity")
 
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
     parser.add_argument("--batch-size", type=int, default=64, help="number of episodes to optimize at the same time")
     parser.add_argument("--loss-type", type=str, default="huber", help="Loss function: huber or mse")
+    parser.add_argument("--soft-update", type=bool, default=True, help="Mode of updating the target network")
 
     # Exploration strategies
     parser.add_argument("--decay-mode", type=str, default="exp2", help="linear or exp")
@@ -41,9 +41,9 @@ def parse_args():
     parser.add_argument("--max-epsilon", type=float, default=1.0, help="max epsilon")
 
     # Model training parameters
-    parser.add_argument("--num-neurons", type=int, default=32, help="number of neurons on the first gnn")
+    parser.add_argument("--no-neurons", type=int, default=32, help="number of neurons on the first gnn")
     parser.add_argument("--l2-reg", type=float, default=2.5e-4, help="kernel regularizer")
-    parser.add_argument("--temporal-mode", type=str, default="attention", help="Attention or rnn")
+    parser.add_argument("--temporal-mode", type=str, default="rnn", help="Attention or rnn")
 
     # Q-learning training parameters
     parser.add_argument("--gamma", type=float, default=0.95, help="discount factor")
@@ -64,7 +64,7 @@ def make_env(scenario_name, benchmark=False):
 
     # load scenario from script
     scenario = scenarios.load(scenario_name + ".py").Scenario()
-    world = scenario.make_world(no_agents=arglist.no_agents, seed=arglist.seed)
+    world = scenario.make_world(no_agents=arglist.no_agents)
     env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
     return env
 
@@ -72,29 +72,30 @@ def make_env(scenario_name, benchmark=False):
 def graph_net(arglist):
     I = []
     for _ in range(no_agents):
-        I.append(Input(shape=(arglist.history_size, feature_dim,)))
+        I.append(Input(shape=(arglist.history_size, no_features,)))
 
     outputs = []
     temporal_state = None
     for i in range(no_agents):
         if arglist.temporal_mode.lower() == "rnn":
-            temporal_state = GRU(arglist.num_neurons)(I[i])
+            temporal_state = GRU(arglist.no_neurons)(I[i])
         elif arglist.temporal_mode.lower() == "attention":
             temporal_state = SelfAttention(activation=tf.keras.layers.LeakyReLU(alpha=0.1))(I[i])
         else:
             raise RuntimeError("Temporal Information Layer should be rnn or attention but %s found!" % arglist.temporal_mode)
-        dense = Dense(arglist.num_neurons,
+        dense = Dense(arglist.no_neurons,
                       kernel_initializer=tf.keras.initializers.he_uniform(),
                       activation=tf.keras.layers.LeakyReLU(alpha=0.1))(temporal_state)
-        med_dense = Dense(arglist.num_neurons,
+        med_dense = Dense(arglist.no_neurons,
                           kernel_initializer=tf.keras.initializers.he_uniform(),
                           activation=tf.keras.layers.LeakyReLU(alpha=0.1))(dense)
-        last_dense = Dense(num_actions, kernel_initializer=tf.keras.initializers.he_uniform())(med_dense)
+        last_dense = Dense(no_actions, kernel_initializer=tf.keras.initializers.he_uniform())(med_dense)
         outputs.append(last_dense)
 
     V = tf.stack(outputs, axis=1)
     model = Model(I, V)
     model._name = "final_network"
+    # tf.keras.utils.plot_model(model, show_shapes=True)
     return model
 
 
@@ -102,25 +103,23 @@ def reformat_input(input):
     splits = tf.split(input, num_or_size_splits=no_agents, axis=1)
     return [tf.squeeze(x, axis=1) for x in splits]
 
-def get_predictions(state, nets, u):
-    # Batch_size, no_agents, Features
+
+def get_predictions(state, nets):
     state = Lambda(lambda x: tf.expand_dims(x, axis=0))(state)
-    # [Batch_size, 1, Features]
     inputs = reformat_input(state)
     preds = nets.predict(inputs)
     return preds
 
 
-def get_actions(predictions, epsilon: float) -> np.array:
+def get_actions(predictions, epsilon: float):
     best_actions = tf.argmax(predictions, axis=-1)[0]
     actions = []
     for i in range(no_agents):
         if np.random.rand() < epsilon:
-            actions.append(np.random.randint(0, num_actions))
+            actions.append(np.random.randint(0, no_actions))
         else:
             actions.append(best_actions.numpy()[i])
     return np.array(actions)
-
 
 
 def __build_conf():
@@ -131,14 +130,13 @@ def __build_conf():
 
 
 def get_eval_reward(env, model, u):
-    k_lst = list(range(arglist.no_neighbors + 2))[2:]  # [2,3]
     reward_total = []
     for _ in range(3):
         obs_n = env.reset()
         obs_n = u.reshape_state(obs_n, arglist.history_size)
         reward = 0
         for i in range(arglist.max_episode_len):
-            predictions = get_predictions(u.to_tensor(np.array(obs_n)), model, u)
+            predictions = get_predictions(u.to_tensor(np.array(obs_n)), model)
             predictions = tf.squeeze(predictions, axis=0)
             actions = [tf.argmax(prediction, axis=-1).numpy() for prediction in predictions]
 
@@ -152,7 +150,7 @@ def get_eval_reward(env, model, u):
 
 
 def main(arglist):
-    global num_actions, feature_dim, no_agents
+    global no_actions, no_features, no_agents
     env = make_env(arglist.scenario)
     env.discrete_action_input = True
 
@@ -167,9 +165,8 @@ def main(arglist):
     u.create_seed(arglist.seed)
 
     # Velocity.x Velocity.y Pos.x Pos.y {Land.Pos.x Land.Pos.y}*10 {Ent.Pos.x Ent.Pos.y}*9
-    num_features = obs_shape_n[0].shape[0]
-    num_actions = env.action_space[0].n
-    feature_dim = num_features  # the size of node features
+    no_features = obs_shape_n[0].shape[0]
+    no_actions = env.action_space[0].n
     model, model_t = __build_conf()
     optimizer = tf.keras.optimizers.Adam(lr=arglist.lr)
     init_loss = np.inf
@@ -229,7 +226,7 @@ def main(arglist):
 
         # Train the models
         if replay_buffer.can_provide_sample(batch_size) and train_step % 100 == 0:
-            state, adj_n, actions, rewards, new_state, dones = replay_buffer.sample(batch_size)
+            state, actions, rewards, new_state, dones = replay_buffer.sample(batch_size)
 
             with tf.GradientTape() as tape:
                 # Calculate TD-target. The Model.predict() method returns numpy() array without taping the forward pass.
@@ -241,7 +238,7 @@ def main(arglist):
                 y = rewards + (1. - dones) * arglist.gamma * max_q_tot
 
                 # Predictions
-                action_one_hot = tf.one_hot(actions, num_actions, name='action_one_hot')
+                action_one_hot = tf.one_hot(actions, no_actions, name='action_one_hot')
                 q_values = model(reformat_input(state))
                 q_tot = tf.reduce_sum(q_values * action_one_hot, axis=-1, name='q_acted')
                 pred = tf.reduce_sum(q_tot, axis=1)
@@ -273,7 +270,7 @@ def main(arglist):
 
         # display training output
         if terminal and (len(episode_rewards) % arglist.save_rate == 0):
-            eval_reward = get_eval_reward(env, model)
+            eval_reward = get_eval_reward(env, model, u)
             with open(res, "a+") as f:
                 mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
                             "train_episode_reward": np.round(np.mean(episode_rewards[-arglist.save_rate:]), 3),

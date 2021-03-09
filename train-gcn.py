@@ -23,7 +23,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=1, help="seed")
 
     # Experience Replay
-    parser.add_argument("--max-buffer-size", type=int, default=20000, help="maximum buffer capacity")
+    parser.add_argument("--max-buffer-size", type=int, default=500000, help="maximum buffer capacity")
 
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
@@ -63,7 +63,7 @@ def make_env(scenario_name, benchmark=False):
     scenario = scenarios.load(scenario_name + ".py").Scenario()
     # create world
     # Here is defined the no_agents
-    world = scenario.make_world(no_agents=arglist.no_agents, seed=arglist.seed)
+    world = scenario.make_world(no_agents=arglist.no_agents)
     # create multiagent environment
     if benchmark:
         env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation, scenario.benchmark_data)
@@ -94,11 +94,6 @@ def GCN_net(arglist):
 
     V = tf.stack(outputs, axis=1)
     model = Model([I1, Adj], V)
-
-    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=arglist.lr),
-                  loss=tf.keras.losses.MeanSquaredError(),
-                  metrics=['acc']
-                  )
     model._name = "final_network"
     return model
 
@@ -278,7 +273,7 @@ def main(arglist):
 
         # display training output
         if terminal and (len(episode_rewards) % arglist.save_rate == 0):
-            eval_reward = get_eval_reward(env, model)
+            eval_reward = get_eval_reward(env, model, u)
             with open(res, "a+") as f:
                 mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
                             "train_episode_reward": np.round(np.mean(episode_rewards[-arglist.save_rate:]), 3),

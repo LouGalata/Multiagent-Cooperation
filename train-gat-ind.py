@@ -24,13 +24,12 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=1, help="seed")
 
     # Experience Replay
-    parser.add_argument("--max-buffer-size", type=int, default=20000, help="maximum buffer capacity")
+    parser.add_argument("--max-buffer-size", type=int, default=500000, help="maximum buffer capacity")
 
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
     parser.add_argument("--batch-size", type=int, default=128, help="number of episodes to optimize at the same time")
     parser.add_argument("--loss-type", type=str, default="huber", help="Loss function: huber or mse")
-    parser.add_argument("--soft-update", type=bool, default=True, help="Mode of updating the target network")
 
     parser.add_argument("--epsilon", type=float, default=1.0, help="epsilon exploration")
     parser.add_argument("--epsilon-decay", type=float, default=0.001, help="epsilon decay")
@@ -60,7 +59,7 @@ def make_env(scenario_name, benchmark=False):
     import multiagent.scenarios as scenarios
 
     scenario = scenarios.load(scenario_name + ".py").Scenario()
-    world = scenario.make_world(no_agents=arglist.no_agents, seed=arglist.seed)
+    world = scenario.make_world(no_agents=arglist.no_agents)
     env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
     return env
 

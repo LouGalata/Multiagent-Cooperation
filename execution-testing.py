@@ -31,7 +31,6 @@ def parse_args():
     return parser.parse_args()
 
 
-
 def make_env(scenario_name, benchmark=False):
     from multiagent.environment import MultiAgentEnv
     import multiagent.scenarios as scenarios

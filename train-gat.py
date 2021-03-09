@@ -23,7 +23,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=1, help="seed")
 
     # Experience Replay
-    parser.add_argument("--max-buffer-size", type=int, default=20000, help="maximum buffer capacity")
+    parser.add_argument("--max-buffer-size", type=int, default=500000, help="maximum buffer capacity")
 
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
