@@ -6,8 +6,6 @@ import numpy as np
 import tensorflow as tf
 from keras.layers import Lambda
 import keras
-from scipy.spatial import cKDTree
-from spektral.layers import GATConv
 from utils.util import Utility
 
 
@@ -25,9 +23,7 @@ def parse_args():
 
     # Evaluation
     parser.add_argument("--display", action="store_true", default=True)
-    parser.add_argument("--exp-name", type=str, default='self-iql2-v3', help="name of the experiment")
-    parser.add_argument("--save-rate", type=int, default=200,
-                        help="save model once every time this many episodes are completed")
+    parser.add_argument("--exp-name", type=str, default='iql2', help="name of the experiment")
     return parser.parse_args()
 
 

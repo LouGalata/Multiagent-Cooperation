@@ -1,6 +1,5 @@
 import argparse
 import os
-import pickle
 import time
 
 import numpy as np
@@ -9,8 +8,9 @@ from keras.layers import Input, Lambda, Dense
 from keras.models import Model
 from spektral.layers import GATConv
 from tensorflow.keras import Sequential
-from utils.util import Utility
+
 from utils.replay_buffer import ReplayBuffer
+from utils.util import Utility
 
 
 def parse_args():
@@ -92,7 +92,6 @@ def graph_net(arglist):
     return model
 
 
-
 def get_predictions(graph, adj, net):
     graph = tf.expand_dims(graph, axis=0)
     adj = tf.expand_dims(adj, axis=0)
@@ -118,7 +117,6 @@ def __build_conf():
     return model, model_t
 
 
-
 def get_eval_reward(env, model, u):
     k_lst = list(range(arglist.no_neighbors + 2))[2:]  # [2,3]
     reward_total = []
@@ -138,6 +136,7 @@ def get_eval_reward(env, model, u):
             reward += rew_n[0]
         reward_total.append(reward)
     return reward_total
+
 
 def main(arglist):
     global no_actions, no_features, no_agents
@@ -164,7 +163,7 @@ def main(arglist):
     init_loss = np.inf
     # Results
     episode_rewards = [0.0]  # sum of rewards for all agents
-    result_path = os.path.join("results",  arglist.exp_name)
+    result_path = os.path.join("results", arglist.exp_name)
     res = os.path.join(result_path, "%s.csv" % arglist.exp_name)
     if not os.path.exists(result_path):
         os.makedirs(result_path)
@@ -198,10 +197,9 @@ def main(arglist):
 
         if done or terminal:
             obs_n = env.reset()
-            epsilon = min_epsilon + (max_epsilon - min_epsilon) * np.exp(-epsilon_decay * train_step/25)
+            epsilon = min_epsilon + (max_epsilon - min_epsilon) * np.exp(-epsilon_decay * train_step / 25)
             episode_step = 0
             episode_rewards.append(0)
-
 
         # increment global step counter
         train_step += 1

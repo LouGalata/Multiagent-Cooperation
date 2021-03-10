@@ -6,10 +6,11 @@ import numpy as np
 import tensorflow as tf
 from keras.layers import Input, Lambda, Dense
 from keras.models import Model
-from utils.util import Utility
 from spektral.layers import GCNConv
 from tensorflow.keras import Sequential
+
 from utils.replay_buffer import ReplayBuffer
+from utils.util import Utility
 
 
 def parse_args():
@@ -52,7 +53,6 @@ def parse_args():
                         help="save model once every time this many episodes are completed")
 
     return parser.parse_args()
-
 
 
 def make_env(scenario_name, benchmark=False):

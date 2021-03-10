@@ -7,8 +7,9 @@ import tensorflow as tf
 from keras.layers import Input, Dense, Lambda
 from keras.models import Model
 from tensorflow.keras import Sequential
-from utils.util import Utility
+
 from utils.replay_buffer_iql import ReplayBuffer
+from utils.util import Utility
 
 
 def parse_args():
@@ -22,11 +23,11 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=1, help="seed")
 
     # Experience Replay
-    parser.add_argument("--max-buffer-size", type=int, default=500000, help="maximum buffer capacity")
+    parser.add_argument("--max-buffer-size", type=int, default=1e6, help="maximum buffer capacity")
 
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
-    parser.add_argument("--batch-size", type=int, default=256, help="number of episodes to optimize at the same time")
+    parser.add_argument("--batch-size", type=int, default=512, help="number of episodes to optimize at the same time")
     parser.add_argument("--loss-type", type=str, default="huber", help="Loss function: huber or mse")
     parser.add_argument("--prioritized-replay", type=bool, default=True, help="Use Prioritized Experience Replay")
     parser.add_argument("--soft-update", type=bool, default=True, help="Mode of updating the target network")
@@ -38,7 +39,7 @@ def parse_args():
     parser.add_argument("--max-epsilon", type=float, default=1.0, help="max epsilon")
 
     # GNN training parameters
-    parser.add_argument("--no-neurons", type=int, default=32, help="number of neurons on the first gnn")
+    parser.add_argument("--no-neurons", type=int, default=64, help="number of neurons on the first gnn")
     parser.add_argument("--l2-reg", type=float, default=2.5e-4, help="kernel regularizer")
 
     # Q-learning training parameters
@@ -47,10 +48,11 @@ def parse_args():
 
     # Evaluation
     parser.add_argument("--display", action="store_true", default=False)
-    parser.add_argument("--exp-name", type=str, default='self-iql2-v3', help="name of the experiment")
+    parser.add_argument("--exp-name", type=str, default='self-iql2-v4', help="name of the experiment")
     parser.add_argument("--save-rate", type=int, default=100,
                         help="save model once every time this many episodes are completed")
     return parser.parse_args()
+
 
 def make_env(scenario_name, benchmark=False):
     from multiagent.environment import MultiAgentEnv
@@ -85,7 +87,6 @@ def IQL_net(arglist):
     return model
 
 
-
 def reformat_input(input):
     splits = tf.split(input, num_or_size_splits=no_agents, axis=1)
     return [tf.squeeze(x, axis=1) for x in splits]
@@ -116,7 +117,6 @@ def __build_conf():
     model_t = IQL_net(arglist)
     model_t.set_weights(model.get_weights())
     return model, model_t
-
 
 
 def get_eval_reward(env, model, u):
@@ -178,13 +178,12 @@ def main(arglist):
     print('Starting iterations...')
     while True:
         episode_step += 1
-        terminal = (episode_step >= arglist.max_episode_len)
-
         predictions = get_predictions(u.to_tensor(np.array(obs_n)), model)
         actions = get_actions(predictions, epsilon)
         # Observe next state, reward and done value
         new_obs_n, rew_n, done_n, _ = env.step(actions)
-        done = all(done_n)
+        terminal = (episode_step >= arglist.max_episode_len)
+        done = all(done_n) or terminal
         cooperative_reward = rew_n[0]
         # Store the data in the replay memory
         replay_buffer.add(obs_n, actions, cooperative_reward, new_obs_n, done)
@@ -195,7 +194,8 @@ def main(arglist):
             obs_n = env.reset()
             if arglist.decay_mode.lower() == "linear":
                 # straight line equation wrapper by max operation -> max(min_value,(-mx + b))
-                epsilon = np.amax((min_epsilon, -((max_epsilon - min_epsilon) * train_step / arglist.max_episode_len) / arglist.e_lin_decay + 1.0))
+                epsilon = np.amax((min_epsilon, -((
+                                                              max_epsilon - min_epsilon) * train_step / arglist.max_episode_len) / arglist.e_lin_decay + 1.0))
             elif arglist.decay_mode.lower() == "exp":
                 # exponential's function Const(e^-t) wrapped by a min function
                 epsilon = np.amin((1, (min_epsilon + (max_epsilon - min_epsilon) * np.exp(
@@ -233,7 +233,7 @@ def main(arglist):
                 # Predictions
                 action_one_hot = tf.one_hot(actions, no_actions, name='action_one_hot')
                 q_values = model(reformat_input(state))
-                # VDN summation
+                    # VDN summation
                 q_tot = tf.reduce_sum(q_values * action_one_hot, axis=1, name='q_acted')
                 pred = tf.reduce_sum(q_tot, axis=1)
 

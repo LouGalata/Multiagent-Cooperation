@@ -1,7 +1,5 @@
 import argparse
 import os
-import pickle
-import random
 import time
 
 import numpy as np
@@ -12,8 +10,8 @@ from keras.models import Model
 from spektral.layers import GATConv
 from tensorflow.keras import Sequential
 
-from utils.util import Utility
 from utils.replay_buffer_entr import ReplayBuffer
+from utils.util import Utility
 
 
 def parse_args():

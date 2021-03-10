@@ -27,10 +27,9 @@ def parse_args():
 
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
-    parser.add_argument("--batch-size", type=int, default=64, help="number of episodes to optimize at the same time")
+    parser.add_argument("--batch-size", type=int, default=512, help="number of episodes to optimize at the same time")
     parser.add_argument("--loss-type", type=str, default="huber", help="Loss function: huber or mse")
     parser.add_argument("--soft-update", type=bool, default=True, help="Mode of updating the target network")
-
 
     # Exploration strategies
     parser.add_argument("--decay-mode", type=str, default="exp2", help="linear or exp")
@@ -41,7 +40,7 @@ def parse_args():
     parser.add_argument("--max-epsilon", type=float, default=1.0, help="max epsilon")
 
     # GNN training parameters
-    parser.add_argument("--no-neurons", type=int, default=32, help="number of neurons on the first gnn")
+    parser.add_argument("--no-neurons", type=int, default=64, help="number of neurons on the first gnn")
     parser.add_argument("--l2-reg", type=float, default=2.5e-4, help="kernel regularizer")
 
     # Q-learning training parameters
