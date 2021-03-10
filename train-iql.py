@@ -27,7 +27,7 @@ def parse_args():
 
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
-    parser.add_argument("--batch-size", type=int, default=32, help="number of episodes to optimize at the same time")
+    parser.add_argument("--batch-size", type=int, default=256, help="number of episodes to optimize at the same time")
     parser.add_argument("--loss-type", type=str, default="huber", help="Loss function: huber or mse")
     parser.add_argument("--prioritized-replay", type=bool, default=True, help="Use Prioritized Experience Replay")
     parser.add_argument("--soft-update", type=bool, default=True, help="Mode of updating the target network")
@@ -49,7 +49,7 @@ def parse_args():
 
     # Evaluation
     parser.add_argument("--display", action="store_true", default=False)
-    parser.add_argument("--exp-name", type=str, default='self-iql2-v4', help="name of the experiment")
+    parser.add_argument("--exp-name", type=str, default='self-iql2-v5', help="name of the experiment")
     parser.add_argument("--save-rate", type=int, default=100,
                         help="save model once every time this many episodes are completed")
     return parser.parse_args()
@@ -198,8 +198,7 @@ def main():
             obs_n = env.reset()
             if arglist.decay_mode.lower() == "linear":
                 # straight line equation wrapper by max operation -> max(min_value,(-mx + b))
-                epsilon = np.amax((min_epsilon, -((
-                                                              max_epsilon - min_epsilon) * train_step / arglist.max_episode_len) / arglist.e_lin_decay + 1.0))
+                epsilon = np.amax((min_epsilon, -((max_epsilon - min_epsilon) * train_step / arglist.max_episode_len) / arglist.e_lin_decay + 1.0))
             elif arglist.decay_mode.lower() == "exp":
                 # exponential's function Const(e^-t) wrapped by a min function
                 epsilon = np.amin((1, (min_epsilon + (max_epsilon - min_epsilon) * np.exp(
@@ -237,7 +236,7 @@ def main():
                 # Predictions
                 action_one_hot = tf.one_hot(actions, no_actions, name='action_one_hot')
                 q_values = model(reformat_input(state))
-                    # VDN summation
+                # VDN summation
                 q_tot = tf.reduce_sum(q_values * action_one_hot, axis=1, name='q_acted')
                 pred = tf.reduce_sum(q_tot, axis=1)
 
@@ -269,7 +268,7 @@ def main():
             model_t.set_weights(model.get_weights())
 
         # display training output
-        if terminal and (len(episode_rewards) % arglist.save_rate == 0):
+        if replay_buffer.can_provide_sample(batch_size) and terminal and (len(episode_rewards) % arglist.save_rate == 0):
             eval_reward = get_eval_reward(env, model, u)
             with open(res, "a+") as f:
                 mes_dict = {"steps": train_step, "episodes": len(episode_rewards),

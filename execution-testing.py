@@ -19,11 +19,11 @@ def parse_args():
     parser.add_argument("--use-gat", type=bool, default=False, help="use of gat netwrok or not")
     parser.add_argument("--use-gcn", type=bool, default=False, help="use of gat netwrok or not")
     parser.add_argument("--use-rnn", type=bool, default=False, help="use of rnn netwrok or not")
-    parser.add_argument("--history-size", type=int, default=4, help="timestep of Rnn memory")
+    parser.add_argument("--history-size", type=int, default=6, help="timestep of Rnn memory")
 
     # Evaluation
     parser.add_argument("--display", action="store_true", default=True)
-    parser.add_argument("--exp-name", type=str, default='iql2', help="name of the experiment")
+    parser.add_argument("--exp-name", type=str, default='self-iql2-v4', help="name of the experiment")
     return parser.parse_args()
 
 
