@@ -27,10 +27,11 @@ def parse_args():
 
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
-    parser.add_argument("--batch-size", type=int, default=512, help="number of episodes to optimize at the same time")
+    parser.add_argument("--batch-size", type=int, default=32, help="number of episodes to optimize at the same time")
     parser.add_argument("--loss-type", type=str, default="huber", help="Loss function: huber or mse")
     parser.add_argument("--prioritized-replay", type=bool, default=True, help="Use Prioritized Experience Replay")
     parser.add_argument("--soft-update", type=bool, default=True, help="Mode of updating the target network")
+    parser.add_argument("--clip-gradients", type=float, default=0.5, help="Norm of clipping gradients")
 
     parser.add_argument("--decay-mode", type=str, default="exp2", help="linear or exp")
     parser.add_argument("--epsilon", type=float, default=1.0, help="epsilon exploration")
@@ -65,7 +66,7 @@ def make_env(scenario_name, benchmark=False):
     return env
 
 
-def IQL_net(arglist):
+def IQL_net():
     I = []
     for _ in range(no_agents):
         I.append(Input(shape=(no_features,)))
@@ -87,6 +88,7 @@ def IQL_net(arglist):
     return model
 
 
+@tf.function
 def reformat_input(input):
     splits = tf.split(input, num_or_size_splits=no_agents, axis=1)
     return [tf.squeeze(x, axis=1) for x in splits]
@@ -113,8 +115,8 @@ def get_actions(predictions, epsilon):
 
 
 def __build_conf():
-    model = IQL_net(arglist)
-    model_t = IQL_net(arglist)
+    model = IQL_net()
+    model_t = IQL_net()
     model_t.set_weights(model.get_weights())
     return model, model_t
 
@@ -133,11 +135,13 @@ def get_eval_reward(env, model, u):
             new_obs_n, rew_n, done_n, _ = env.step(actions)
             obs_n = new_obs_n
             reward += rew_n[0]
+            if all(done_n):
+                break
         reward_total.append(reward)
     return reward_total
 
 
-def main(arglist):
+def main():
     global no_actions, no_features, no_agents
     env = make_env(arglist.scenario)
     env.discrete_action_input = True
@@ -157,7 +161,7 @@ def main(arglist):
     no_features = obs_shape_n[0].shape[0]
     no_actions = env.action_space[0].n
     model, model_t = __build_conf()
-    optimizer = tf.keras.optimizers.Adam(lr=arglist.lr)
+    optimizer = tf.keras.optimizers.RMSprop(lr=arglist.lr)
     init_loss = np.inf
 
     # Results
@@ -245,7 +249,7 @@ def main(arglist):
                     raise RuntimeError(
                         "Loss function should be either Huber or MSE. %s found!" % arglist.loss_type)
                 gradients = tape.gradient(loss, model.trainable_variables)
-                local_clipped = u.clip_by_local_norm(gradients, 0.1)
+                local_clipped = u.clip_by_local_norm(gradients, arglist.clip_gradients)
             optimizer.apply_gradients(zip(local_clipped, model.trainable_variables))
 
             # train target model
@@ -283,4 +287,4 @@ def main(arglist):
 
 if __name__ == '__main__':
     arglist = parse_args()
-    main(arglist)
+    main()

@@ -191,7 +191,7 @@ def main(arglist):
 
         # Observe next state, reward and done value
         new_obs_n, rew_n, done_n, _ = env.step(actions)
-        done = all(done_n)
+        done = all(done_n) or terminal
         cooperative_reward = rew_n[0]
         # Store the data in the replay memory
         replay_buffer.add(obs_n, adj, actions, cooperative_reward, new_obs_n, done)

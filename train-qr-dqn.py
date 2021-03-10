@@ -159,7 +159,7 @@ def main(arglist):
             actions.append(action_)
         # Observe next state, reward and done value
         new_obs_n, rew_n, done_n, _ = env.step(smp_actions)
-        done = all(done_n)
+        done = all(done_n) or terminal
         # Store the data in the replay memory
         replay_buffer.add(obs_n, actions, rew_n, new_obs_n, done_n)
         obs_n = new_obs_n
