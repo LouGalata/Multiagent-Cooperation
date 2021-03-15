@@ -1,8 +1,11 @@
 **Multiagent Cooperation**
 
-
+*Environment*
+1. Multiagent particle environment: https://github.com/openai/multiagent-particle-envs
+2. BATTLE (https://github.com/PKU-AI-Edge/DGN): in progress
 
 *Experiments*
+The configuring parameters are located on the top of each execution file. 
 1. train-iql.py: Independent q-learning with VDN mixing strategy
 2. train-iql-prior.py: Independent q-learning with VDN mixing strategy and prioritized experience replay
 3. train-gcn.py: Graph Convolutional Network with VDN 
