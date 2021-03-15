@@ -228,6 +228,7 @@ def main(arglist):
                 target_q_tot = tf.reduce_max(target_q_values, axis=-1)
                 # Apply VDN to reduce the agent-dimension
                 max_q_tot = tf.reduce_sum(target_q_tot, axis=-1)
+                entropies = tf.reduce_sum(entropies, axis=-1)
                 y = rewards + (1. - dones) * arglist.gamma * (max_q_tot + beta * entropies)
 
                 # Predictions

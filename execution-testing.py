@@ -27,17 +27,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def make_env(scenario_name, benchmark=False):
-    from multiagent.environment import MultiAgentEnv
-    import multiagent.scenarios as scenarios
-
-    # load scenario from script
-    scenario = scenarios.load(scenario_name + ".py").Scenario()
-    world = scenario.make_world(no_agents=arglist.no_agents)
-    env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
-    return env
-
-
 def reformat_input(input):
     splits = tf.split(input, num_or_size_splits=no_agents, axis=1)
     return [tf.squeeze(x, axis=1) for x in splits]
@@ -64,7 +53,7 @@ def main(arglist):
     # Global variables
     global num_actions, feature_dim, no_agents
     # Create environment
-    env = make_env(arglist.scenario)
+    env = u.make_env(arglist.scenario)
     env.discrete_action_input = True
 
     obs_shape_n = env.observation_space
