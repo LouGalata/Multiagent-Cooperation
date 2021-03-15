@@ -251,6 +251,22 @@ def main(arglist):
                 tf.saved_model.save(model, result_path)
                 init_loss = loss.numpy()
 
+            # display training output
+            if train_step % arglist.save_rate == 0:
+                eval_reward = get_eval_reward(env, model)
+                with open(res, "a+") as f:
+                    mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
+                                "train_episode_reward": np.round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
+                                "eval_episode_reward": np.round(np.mean(eval_reward), 3),
+                                "loss": round(loss.numpy(), 3),
+                                "time": round(time.time() - t_start, 3)}
+                    print(mes_dict)
+                    for item in list(mes_dict.values()):
+                        f.write("%s\t" % item)
+                    f.write("\n")
+                    f.close()
+                t_start = time.time()
+
         # train target model
         if arglist.soft_update:
             weights = model.get_weights()
@@ -261,23 +277,6 @@ def main(arglist):
             model_t.set_weights(target_weights)
         elif train_step % 200 == 0:
             model_t.set_weights(model.get_weights())
-
-        # display training output
-        if train_step >= batch_size * arglist.max_episode_len and terminal and (
-                len(episode_rewards) % arglist.save_rate == 0):
-            eval_reward = get_eval_reward(env, model)
-            with open(res, "a+") as f:
-                mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
-                            "train_episode_reward": np.round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
-                            "eval_episode_reward": np.round(np.mean(eval_reward), 3),
-                            "loss": round(loss.numpy(), 3),
-                            "time": round(time.time() - t_start, 3)}
-                print(mes_dict)
-                for item in list(mes_dict.values()):
-                    f.write("%s\t" % item)
-                f.write("\n")
-                f.close()
-        t_start = time.time()
 
 
 if __name__ == '__main__':

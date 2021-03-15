@@ -107,7 +107,7 @@ def __build_conf():
     return model, model_t
 
 
-def get_eval_reward(env, model, u):
+def get_eval_reward(env, model):
     k_lst = list(range(arglist.no_neighbors + 2))[2:]  # [2,3]
     reward_total = []
     for _ in range(3):

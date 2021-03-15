@@ -17,7 +17,7 @@ def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
-    parser.add_argument("--no-agents", type=int, default=5, help="number of agents")
+    parser.add_argument("--no-agents", type=int, default=2, help="number of agents")
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--no-episodes", type=int, default=30000, help="number of episodes")
     parser.add_argument("--no-neighbors", type=int, default=2, help="number of neigbors to cooperate")
@@ -53,8 +53,8 @@ def parse_args():
 
     # Evaluation
     parser.add_argument("--display", action="store_true", default=False)
-    parser.add_argument("--exp-name", type=str, default='gat6', help="name of the experiment")
-    parser.add_argument("--save-rate", type=int, default=50,
+    parser.add_argument("--exp-name", type=str, default='irnn2', help="name of the experiment")
+    parser.add_argument("--save-rate", type=int, default=300,
                         help="save model once every time this many episodes are completed")
     return parser.parse_args()
 
@@ -221,15 +221,14 @@ def main(arglist):
         if replay_buffer.can_provide_sample(batch_size, arglist.max_episode_len) and train_step % 100 == 0:
             state, actions, rewards, new_state, dones = replay_buffer.sample(batch_size)
 
+            # Calculate TD-target. The Model.predict() method returns numpy() array without taping the forward pass.
+            target_q_values = model_t(reformat_input(new_state))
+            # Apply max(Q) to obtain the TD-target
+            target_q_tot = tf.reduce_max(target_q_values, axis=-1)
+            # Apply VDN to reduce the agent-dimension
+            max_q_tot = tf.reduce_sum(target_q_tot, axis=-1)
+            y = rewards + (1. - dones) * arglist.gamma * max_q_tot
             with tf.GradientTape() as tape:
-                # Calculate TD-target. The Model.predict() method returns numpy() array without taping the forward pass.
-                target_q_values = model_t(reformat_input(new_state))
-                # Apply max(Q) to obtain the TD-target
-                target_q_tot = tf.reduce_max(target_q_values, axis=-1)
-                # Apply VDN to reduce the agent-dimension
-                max_q_tot = tf.reduce_sum(target_q_tot, axis=-1)
-                y = rewards + (1. - dones) * arglist.gamma * max_q_tot
-
                 # Predictions
                 action_one_hot = tf.one_hot(actions, no_actions, name='action_one_hot')
                 q_values = model(reformat_input(state))
