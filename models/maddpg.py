@@ -4,12 +4,13 @@ import tensorflow as tf
 from gym import Space
 from gym.spaces import Discrete
 
+import keras
 from models.AbstractAgent import AbstractAgent
 from commons.util import space_n_to_shape_n, clip_by_local_norm
 
 
 class MADDPGAgent(AbstractAgent):
-    def __init__(self, obs_space_n, act_space_n, agent_index, batch_size, buff_size, lr, num_units, gamma,
+    def __init__(self, obs_space_n, act_space_n, agent_index, batch_size, buff_size, lr, num_units, gamma, path,
                  tau, prioritized_replay=True, alpha=0.6, max_step=None, initial_beta=0.6, prioritized_replay_eps=1e-6):
 
         assert isinstance(obs_space_n[0], Space)
@@ -19,6 +20,7 @@ class MADDPGAgent(AbstractAgent):
                          prioritized_replay_eps=prioritized_replay_eps)
 
         act_type = type(act_space_n[0])
+        self.result_path = path
         self.critic = MADDPGCriticNetwork(num_units, lr, obs_shape_n, act_shape_n, act_type, agent_index)
         self.critic_target = MADDPGCriticNetwork(num_units, lr, obs_shape_n, act_shape_n, act_type, agent_index)
         self.critic_target.model.set_weights(self.critic.model.get_weights())
@@ -86,7 +88,7 @@ class MADDPGAgent(AbstractAgent):
 
         # Train the policy.
         policy_loss = self.policy.train(obs_n, acts_n)
-
+        self.save(self.result_path)
         # Update priorities if using prioritized replay
         if self.prioritized_replay:
             self.replay_buffer.update_priorities(indices, td_loss + self.prioritized_replay_eps)
@@ -97,16 +99,12 @@ class MADDPGAgent(AbstractAgent):
         return [td_loss, policy_loss]
 
     def save(self, fp):
-        self.critic.model.save_weights(fp + 'critic.h5',)
-        self.critic_target.model.save_weights(fp + 'critic_target.h5')
-        self.policy.model.save_weights(fp + 'policy.h5')
-        self.policy_target.model.save_weights(fp + 'policy_target.h5')
+        tf.saved_model.save(self.critic.model, fp + '/critic')
+        tf.saved_model.save(self.policy.model, fp + '/policy')
 
     def load(self, fp):
-        self.critic.model.load_weights(fp + 'critic.h5')
-        self.critic_target.model.load_weights(fp + 'critic_target.h5')
-        self.policy.model.load_weights(fp + 'policy.h5')
-        self.policy_target.model.load_weights(fp + 'policy_target.h5')
+        self.critic.model = keras.models.load_model(fp + '/critic')
+        self.policy.model = keras.models.load_model(fp + '/policy')
 
 
 class MADDPGPolicyNetwork(object):

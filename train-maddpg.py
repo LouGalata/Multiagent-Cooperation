@@ -49,6 +49,7 @@ def parse_args():
     parser.add_argument("--tau", type=float, default=0.01, help="smooth weights copy to target model")
 
     # Evaluation
+    parser.add_argument("--restore-fp", type=bool, default=False, help="Load saved model")
     parser.add_argument("--display", action="store_true", default=False)
     parser.add_argument("--exp-name", type=str, default='maddpg2', help="name of the experiment")
     parser.add_argument("--update-rate", type=int, default=100,
@@ -58,11 +59,12 @@ def parse_args():
     return parser.parse_args()
 
 
-def get_agents(env) -> List[AbstractAgent]:
+def get_agents(env, path) -> List[AbstractAgent]:
     agents = []
     for agent_idx in range(arglist.no_agents):
+        path = os.path.join(path, 'agent_{}'.format(agent_idx))
         agent = MADDPGAgent(env.observation_space, env.action_space, agent_idx, arglist.batch_size,
-                            arglist.max_buffer_size, arglist.lr, arglist.no_neurons, arglist.gamma, arglist.tau,
+                            arglist.max_buffer_size, arglist.lr, arglist.no_neurons, arglist.gamma, path, arglist.tau,
                             alpha=arglist.alpha,
                             max_step=arglist.no_episodes * arglist.max_episode_len,
                             initial_beta=arglist.initial_beta)
@@ -74,8 +76,6 @@ def get_agents(env) -> List[AbstractAgent]:
 def main():
     no_agents = arglist.no_agents
     env = u.make_env(arglist.scenario, no_agents)
-    agents = get_agents(env)
-    obs_n = env.reset()
 
     # Result paths
     result_path = os.path.join("results", arglist.exp_name)
@@ -83,8 +83,12 @@ def main():
     if not os.path.exists(result_path):
         os.makedirs(result_path)
 
+    agents = get_agents(env, result_path)
+    obs_n = env.reset()
+
+
     # Load previous results if necessary
-    if arglist.restore_fp is not None:
+    if arglist.restore_fp:
         print('Loading previous state...')
         for ag_idx, agent in enumerate(agents):
             fp = os.path.join(result_path, 'agent_{}'.format(ag_idx))
@@ -126,18 +130,6 @@ def main():
                 if train_step % arglist.update_rate == 0:  # only update every 100 steps
                     q_loss, pol_loss = agent.update(agents, train_step)
                     q_loss_total += q_loss
-
-            # display training output
-            if terminal and (len(episode_rewards) % arglist.save_rate == 0):
-                with open(res, "a+") as f:
-                    mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
-                                "train_episode_reward": np.round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
-                                "loss": round(q_loss_total, 3)}
-                    print(mes_dict)
-                    for item in list(mes_dict.values()):
-                        f.write("%s\t" % item)
-                    f.write("\n")
-                    f.close()
 
 
 if __name__ == '__main__':

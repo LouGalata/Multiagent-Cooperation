@@ -6,36 +6,29 @@ from scipy.spatial import cKDTree
 from spektral.layers import GCNConv, GATConv
 
 
-class Utility(object):
-    def __init__(self, no_agents, is_rnn=False, is_gcn=False, is_gat=False):
-        self.no_agents = no_agents
-        self.is_rnn = is_rnn
-        self.is_gcn = is_gcn
-        self.is_gat = is_gat
+def get_adj(arr, k_lst, no_agents, is_gat=False, is_gcn=False):
+    """
+    Take as input the new obs. In position 4 to k, there are the x and y coordinates of each agent
+    Make an adjacency matrix, where each agent communicates with the k closest ones
+    """
+    points = [i[2:4] for i in arr]
+    adj = np.zeros((no_agents, no_agents), dtype=float)
+    # construct a kd-tree
+    tree = cKDTree(points)
+    for cnt, row in enumerate(points):
+        # find k nearest neighbors for each element of data, squeezing out the zero result (the first nearest
+        # neighbor is always itself)
+        dd, ii = tree.query(row, k=k_lst)
+        # apply an index filter on data to get the nearest neighbor elements
+        adj[cnt][ii] = 1
+        # adjacency[cnt, ii] = 1.0
 
-    def get_adj(self, arr, k_lst):
-        """
-        Take as input the new obs. In position 4 to k, there are the x and y coordinates of each agent
-        Make an adjacency matrix, where each agent communicates with the k closest ones
-        """
-        points = [i[2:4] for i in arr]
-        adj = np.zeros((self.no_agents, self.no_agents), dtype=float)
-        # construct a kd-tree
-        tree = cKDTree(points)
-        for cnt, row in enumerate(points):
-            # find k nearest neighbors for each element of data, squeezing out the zero result (the first nearest
-            # neighbor is always itself)
-            dd, ii = tree.query(row, k=k_lst)
-            # apply an index filter on data to get the nearest neighbor elements
-            adj[cnt][ii] = 1
-            # adjacency[cnt, ii] = 1.0
-
-        # add self-loops and symmetric normalization
-        if self.is_gcn:
-            adj = GCNConv.preprocess(adj).astype('f4')
-        elif self.is_gat:
-            adj = GATConv.preprocess(adj).astype('f4')
-        return adj
+    # add self-loops and symmetric normalization
+    if is_gcn:
+        adj = GCNConv.preprocess(adj).astype('f4')
+    elif is_gat:
+        adj = GATConv.preprocess(adj).astype('f4')
+    return adj
 
 
 def clip_by_local_norm(gradients, norm):
