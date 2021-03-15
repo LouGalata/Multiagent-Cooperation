@@ -137,3 +137,14 @@ def softmax_to_argmax(action_n, agents):
         hard_action_n.append(tf.keras.utils.to_categorical(np.argmax(action), agent.act_shape_n[ag_idx,0]))
 
     return hard_action_n
+
+
+def make_env(scenario_name, no_agents):
+    from environments.multiagent.environment import MultiAgentEnv
+    import environments.multiagent.scenarios as scenarios
+
+    # load scenario from script
+    scenario = scenarios.load(scenario_name + ".py").Scenario()
+    world = scenario.make_world(no_agents=no_agents)
+    env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
+    return env

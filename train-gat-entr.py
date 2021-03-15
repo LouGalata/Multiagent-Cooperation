@@ -11,7 +11,7 @@ from spektral.layers import GATConv
 from tensorflow.keras import Sequential
 
 from buffers.replay_buffer_entr import ReplayBuffer
-from commons.util import Utility
+from commons import util as u
 
 
 def parse_args():
@@ -52,17 +52,6 @@ def parse_args():
     parser.add_argument("--save-rate", type=int, default=50,
                         help="save model once every time this many episodes are completed")
     return parser.parse_args()
-
-
-def make_env(scenario_name, benchmark=False):
-    from multiagent.environment import MultiAgentEnv
-    import multiagent.scenarios as scenarios
-
-    # load scenario from script
-    scenario = scenarios.load(scenario_name + ".py").Scenario()
-    world = scenario.make_world(no_agents=arglist.no_agents)
-    env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
-    return env
 
 
 def graph_net(arglist):
@@ -129,12 +118,12 @@ def __build_conf():
     return model, model_t
 
 
-def get_eval_reward(env, model, u):
+def get_eval_reward(env, model):
     k_lst = list(range(arglist.no_neighbors + 2))[2:]  # [2,3]
     reward_total = []
     for _ in range(3):
         obs_n = env.reset()
-        adj = u.get_adj(obs_n, k_lst)
+        adj = u.Utility(no_agents, is_gat=True).get_adj(obs_n, k_lst)
         reward = 0
         for i in range(arglist.max_episode_len):
             predictions = get_predictions(u.to_tensor(np.array(obs_n)), adj, model)
@@ -143,7 +132,7 @@ def get_eval_reward(env, model, u):
 
             # Observe next state, reward and done value
             new_obs_n, rew_n, done_n, _ = env.step(actions)
-            adj = u.get_adj(new_obs_n, k_lst)
+            adj = u.Utility(no_agents, is_gat=True).get_adj(new_obs_n, k_lst)
             obs_n = new_obs_n
             reward += rew_n[0]
         reward_total.append(reward)
@@ -152,7 +141,7 @@ def get_eval_reward(env, model, u):
 
 def main(arglist):
     global no_actions, no_features, no_agents
-    env = make_env(arglist.scenario)
+    env = u.make_env(arglist.scenario, arglist.no_agents)
     env.discrete_action_input = True
 
     obs_shape_n = env.observation_space
@@ -164,7 +153,6 @@ def main(arglist):
     epsilon_decay = arglist.epsilon_decay
     min_epsilon = arglist.min_epsilon
     max_epsilon = arglist.max_epsilon
-    u = Utility(no_agents, is_gat=True)
     u.create_seed(arglist.seed)
 
     k_lst = list(range(no_neighbors + 2))[2:]  # [2,3]
@@ -192,14 +180,14 @@ def main(arglist):
 
     t_start = time.time()
     obs_n = env.reset()
-    adj = u.get_adj(obs_n, k_lst)
+    adj = u.Utility(no_agents, is_gat=True).get_adj(obs_n, k_lst)
 
     print('Starting iterations...')
     while True:
         episode_step += 1
         terminal = (episode_step >= arglist.max_episode_len)
         if episode_step % 3 == 0:
-            adj = u.get_adj(obs_n, k_lst)
+            adj = u.Utility(no_agents, is_gat=True).get_adj(obs_n, k_lst)
 
         predictions = get_predictions(u.to_tensor(np.array(obs_n)), adj, model)
         actions, entropies = get_actions(predictions, epsilon)
@@ -275,8 +263,9 @@ def main(arglist):
             model_t.set_weights(model.get_weights())
 
         # display training output
-        if terminal and (len(episode_rewards) % arglist.save_rate == 0):
-            eval_reward = get_eval_reward(env, model, u)
+        if train_step >= batch_size * arglist.max_episode_len and terminal and (
+                len(episode_rewards) % arglist.save_rate == 0):
+            eval_reward = get_eval_reward(env, model)
             with open(res, "a+") as f:
                 mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
                             "train_episode_reward": np.round(np.mean(episode_rewards[-arglist.save_rate:]), 3),

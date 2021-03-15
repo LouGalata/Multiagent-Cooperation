@@ -56,16 +56,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def make_env(scenario_name):
-    from multiagent.environment import MultiAgentEnv
-    import multiagent.scenarios as scenarios
-
-    scenario = scenarios.load(scenario_name + ".py").Scenario()
-    world = scenario.make_world(no_agents=arglist.no_agents)
-    env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
-    return env
-
-
 def graph_net(arglist):
     I1 = Input(shape=(no_agents, no_features), name="graph_input")
     Adj = Input(shape=(no_agents, no_agents), name="adj")
@@ -145,7 +135,7 @@ def get_eval_reward(env, model):
 
 def main(arglist):
     global no_actions, no_features, no_agents
-    env = make_env(arglist.scenario)
+    env = u.make_env(arglist.scenario, arglist.no_agents)
     env.discrete_action_input = True
 
     obs_shape_n = env.observation_space
@@ -204,7 +194,7 @@ def main(arglist):
             if arglist.decay_mode.lower() == "linear":
                 # straight line equation wrapper by max operation -> max(min_value,(-mx + b))
                 epsilon = np.amax((min_epsilon, -((
-                                                              max_epsilon - min_epsilon) * train_step / arglist.max_episode_len) / arglist.e_lin_decay + 1.0))
+                                                          max_epsilon - min_epsilon) * train_step / arglist.max_episode_len) / arglist.e_lin_decay + 1.0))
             elif arglist.decay_mode.lower() == "exp":
                 # exponential's function Const(e^-t) wrapped by a min function
                 epsilon = np.amin((1, (min_epsilon + (max_epsilon - min_epsilon) * np.exp(
@@ -272,7 +262,8 @@ def main(arglist):
             model_t.set_weights(model.get_weights())
 
         # display training output
-        if terminal and (len(episode_rewards) % arglist.save_rate == 0):
+        if train_step >= batch_size * arglist.max_episode_len and terminal and (
+                len(episode_rewards) % arglist.save_rate == 0):
             eval_reward = get_eval_reward(env, model)
             with open(res, "a+") as f:
                 mes_dict = {"steps": train_step, "episodes": len(episode_rewards),

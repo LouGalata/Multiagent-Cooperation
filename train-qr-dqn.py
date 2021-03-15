@@ -10,7 +10,7 @@ import tensorflow as tf
 from tensorflow.keras import Sequential
 from models.qr_dqn import ActionValueModel
 from buffers.replay_buffer_iql import ReplayBuffer
-
+from commons import util as u
 
 def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
@@ -60,23 +60,6 @@ def create_seed(seed):
     tf.random.set_seed(seed)
 
 
-def make_env(scenario_name, benchmark=False):
-    from multiagent.environment import MultiAgentEnv
-    import multiagent.scenarios as scenarios
-
-    # load scenario from script
-    scenario = scenarios.load(scenario_name + ".py").Scenario()
-    # create world
-    # Here is defined the num_agents
-    world = scenario.make_world(no_agents=arglist.no_agents, seed = arglist.seed)
-    # create multiagent environment
-    if benchmark:
-        env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation, scenario.benchmark_data)
-    else:
-        env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
-    return env
-
-
 def __get_callbacks(logdir, idx):
     path = "agent %d " % idx
     callbacks = [tf.keras.callbacks.TerminateOnNaN(),
@@ -117,7 +100,7 @@ def update_q_values(arglist, batch_size, no_agents, actions, rewards, dones, q_v
 
 def main(arglist):
     global num_actions, feature_dim, no_agents, no_atoms
-    env = make_env(arglist.scenario)
+    env = u.make_env(arglist.scenario, arglist.no_agents)
     env.discrete_action_input = True
 
     obs_shape_n = env.observation_space

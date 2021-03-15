@@ -1,9 +1,12 @@
 import argparse
 import os
 from typing import List
+
 import numpy as np
-from models.maddpg import MADDPGAgent
+
+from commons import util as u
 from models.AbstractAgent import AbstractAgent
+from models.maddpg import MADDPGAgent
 
 
 def parse_args():
@@ -55,16 +58,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def make_env():
-    from multiagent.environment import MultiAgentEnv
-    import multiagent.scenarios as scenarios
-    scenario_name = arglist.scenario
-    scenario = scenarios.load(scenario_name + ".py").Scenario()
-    world = scenario.make_world(no_agents=arglist.no_agents)
-    env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
-    return env
-
-
 def get_agents(env) -> List[AbstractAgent]:
     agents = []
     for agent_idx in range(arglist.no_agents):
@@ -79,11 +72,10 @@ def get_agents(env) -> List[AbstractAgent]:
 
 
 def main():
-    env = make_env()
-    agents = get_agents(env)
     no_agents = arglist.no_agents
+    env = u.make_env(arglist.scenario, no_agents)
+    agents = get_agents(env)
     obs_n = env.reset()
-
 
     # Result paths
     result_path = os.path.join("results", arglist.exp_name)
@@ -134,7 +126,6 @@ def main():
                 if train_step % arglist.update_rate == 0:  # only update every 100 steps
                     q_loss, pol_loss = agent.update(agents, train_step)
                     q_loss_total += q_loss
-
 
             # display training output
             if terminal and (len(episode_rewards) % arglist.save_rate == 0):

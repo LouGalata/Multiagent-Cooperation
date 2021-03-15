@@ -55,17 +55,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def make_env(scenario_name, benchmark=False):
-    from multiagent.environment import MultiAgentEnv
-    import multiagent.scenarios as scenarios
-
-    # load scenario from script
-    scenario = scenarios.load(scenario_name + ".py").Scenario()
-    world = scenario.make_world(no_agents=arglist.no_agents)
-    env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
-    return env
-
-
 def IQL_net():
     I = []
     for _ in range(no_agents):
@@ -79,7 +68,8 @@ def IQL_net():
         med_dense = Dense(arglist.no_neurons,
                           kernel_initializer=tf.keras.initializers.he_uniform(),
                           activation=tf.keras.layers.LeakyReLU(alpha=0.1))(dense)
-        last_dense = Dense(no_actions,  activation='linear', kernel_initializer=tf.keras.initializers.he_uniform())(med_dense)
+        last_dense = Dense(no_actions, activation='linear', kernel_initializer=tf.keras.initializers.he_uniform())(
+            med_dense)
 
         outputs.append(last_dense)
 
@@ -126,7 +116,7 @@ def __build_conf():
     return model, model_t
 
 
-def get_eval_reward(env, model, u):
+def get_eval_reward(env, model):
     reward_total = []
     for _ in range(3):
         obs_n = env.reset()
@@ -148,7 +138,7 @@ def get_eval_reward(env, model, u):
 
 def main():
     global no_actions, no_features, no_agents
-    env = make_env(arglist.scenario)
+    env = u.make_env(arglist.scenario, arglist.no_agents)
     if not arglist.use_gumbel:
         env.discrete_action_input = True
 
@@ -203,7 +193,8 @@ def main():
             obs_n = env.reset()
             if arglist.decay_mode.lower() == "linear":
                 # straight line equation wrapper by max operation -> max(min_value,(-mx + b))
-                epsilon = np.amax((min_epsilon, -((max_epsilon - min_epsilon) * train_step / arglist.max_episode_len) / arglist.e_lin_decay + 1.0))
+                epsilon = np.amax((min_epsilon, -((
+                                                              max_epsilon - min_epsilon) * train_step / arglist.max_episode_len) / arglist.e_lin_decay + 1.0))
             elif arglist.decay_mode.lower() == "exp":
                 # exponential's function Const(e^-t) wrapped by a min function
                 epsilon = np.amin((1, (min_epsilon + (max_epsilon - min_epsilon) * np.exp(
@@ -270,8 +261,9 @@ def main():
             model_t.set_weights(model.get_weights())
 
         # display training output
-        if train_step >= batch_size * arglist.max_episode_len and terminal and (len(episode_rewards) % arglist.save_rate==0):
-            eval_reward = get_eval_reward(env, model, u)
+        if train_step >= batch_size * arglist.max_episode_len and terminal and (
+                len(episode_rewards) % arglist.save_rate == 0):
+            eval_reward = get_eval_reward(env, model)
             with open(res, "a+") as f:
                 mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
                             "train_episode_reward": np.round(np.mean(episode_rewards[-arglist.save_rate:]), 3),

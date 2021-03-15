@@ -7,10 +7,10 @@ import tensorflow as tf
 from keras.layers import Input, Lambda, Dense, GRU
 from keras.models import Model
 from tensorflow.keras import Sequential
-from models.attention import SelfAttention
 
 from buffers.replay_buffer_iql import ReplayBuffer
-from commons.util import Utility
+from commons import util as u
+from models.attention import SelfAttention
 
 
 def parse_args():
@@ -48,7 +48,8 @@ def parse_args():
     # Q-learning training parameters
     parser.add_argument("--gamma", type=float, default=0.95, help="discount factor")
     parser.add_argument("--tau", type=float, default=0.01, help="smooth weights copy to target model")
-    parser.add_argument("--history-size", type=int, default=4, help="number of timesteps/ history that will be used in the recurrent model")
+    parser.add_argument("--history-size", type=int, default=4,
+                        help="number of timesteps/ history that will be used in the recurrent model")
 
     # Evaluation
     parser.add_argument("--display", action="store_true", default=False)
@@ -56,17 +57,6 @@ def parse_args():
     parser.add_argument("--save-rate", type=int, default=50,
                         help="save model once every time this many episodes are completed")
     return parser.parse_args()
-
-
-def make_env(scenario_name, benchmark=False):
-    from multiagent.environment import MultiAgentEnv
-    import multiagent.scenarios as scenarios
-
-    # load scenario from script
-    scenario = scenarios.load(scenario_name + ".py").Scenario()
-    world = scenario.make_world(no_agents=arglist.no_agents)
-    env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
-    return env
 
 
 def graph_net(arglist):
@@ -82,7 +72,8 @@ def graph_net(arglist):
         elif arglist.temporal_mode.lower() == "attention":
             temporal_state = SelfAttention(activation=tf.keras.layers.LeakyReLU(alpha=0.1))(I[i])
         else:
-            raise RuntimeError("Temporal Information Layer should be rnn or attention but %s found!" % arglist.temporal_mode)
+            raise RuntimeError(
+                "Temporal Information Layer should be rnn or attention but %s found!" % arglist.temporal_mode)
         dense = Dense(arglist.no_neurons,
                       kernel_initializer=tf.keras.initializers.he_uniform(),
                       activation=tf.keras.layers.LeakyReLU(alpha=0.1))(temporal_state)
@@ -129,7 +120,7 @@ def __build_conf():
     return model, model_t
 
 
-def get_eval_reward(env, model, u):
+def get_eval_reward(env, model):
     reward_total = []
     for _ in range(3):
         obs_n = env.reset()
@@ -151,7 +142,7 @@ def get_eval_reward(env, model, u):
 
 def main(arglist):
     global no_actions, no_features, no_agents
-    env = make_env(arglist.scenario)
+    env = u.make_env(arglist.scenario, arglist.no_agents)
     env.discrete_action_input = True
 
     obs_shape_n = env.observation_space
@@ -161,7 +152,6 @@ def main(arglist):
     epsilon_decay = arglist.epsilon_decay
     min_epsilon = arglist.min_epsilon
     max_epsilon = arglist.max_epsilon
-    u = Utility(no_agents, is_rnn=True)
     u.create_seed(arglist.seed)
 
     # Velocity.x Velocity.y Pos.x Pos.y {Land.Pos.x Land.Pos.y}*10 {Ent.Pos.x Ent.Pos.y}*9
@@ -172,7 +162,7 @@ def main(arglist):
     init_loss = np.inf
     # Results
     episode_rewards = [0.0]  # sum of rewards for all agents
-    result_path = os.path.join("results",  arglist.exp_name)
+    result_path = os.path.join("results", arglist.exp_name)
     res = os.path.join(result_path, "%s.csv" % arglist.exp_name)
     if not os.path.exists(result_path):
         os.makedirs(result_path)
@@ -206,12 +196,15 @@ def main(arglist):
             obs_n = u.reshape_state(obs_n, arglist.history_size)
             if arglist.decay_mode.lower() == "linear":
                 # straight line equation wrapper by max operation -> max(min_value,(-mx + b))
-                epsilon = np.amax((min_epsilon, -((max_epsilon - min_epsilon) * train_step / arglist.max_episode_len) / arglist.e_lin_decay + 1.0))
+                epsilon = np.amax((min_epsilon, -((
+                                                          max_epsilon - min_epsilon) * train_step / arglist.max_episode_len) / arglist.e_lin_decay + 1.0))
             elif arglist.decay_mode.lower() == "exp":
                 # exponential's function Const(e^-t) wrapped by a min function
-                epsilon = np.amin((1, (min_epsilon + (max_epsilon - min_epsilon) * np.exp(-(train_step / arglist.max_episode_len - 1) /epsilon_decay))))
+                epsilon = np.amin((1, (min_epsilon + (max_epsilon - min_epsilon) * np.exp(
+                    -(train_step / arglist.max_episode_len - 1) / epsilon_decay))))
             else:
-                epsilon = min_epsilon + (max_epsilon - min_epsilon) * np.exp(-epsilon_decay * train_step / arglist.max_episode_len)
+                epsilon = min_epsilon + (max_epsilon - min_epsilon) * np.exp(
+                    -epsilon_decay * train_step / arglist.max_episode_len)
             episode_step = 0
             episode_rewards.append(0)
 
@@ -257,6 +250,22 @@ def main(arglist):
                 tf.saved_model.save(model, result_path)
                 init_loss = loss.numpy()
 
+            # display training output
+            if train_step % arglist.save_rate == 0:
+                eval_reward = get_eval_reward(env, model)
+                with open(res, "a+") as f:
+                    mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
+                                "train_episode_reward": np.round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
+                                "eval_episode_reward": np.round(np.mean(eval_reward), 3),
+                                "loss": round(loss.numpy(), 3),
+                                "time": round(time.time() - t_start, 3)}
+                    print(mes_dict)
+                    for item in list(mes_dict.values()):
+                        f.write("%s\t" % item)
+                    f.write("\n")
+                    f.close()
+                t_start = time.time()
+
         # train target model
         if arglist.soft_update:
             weights = model.get_weights()
@@ -267,22 +276,6 @@ def main(arglist):
             model_t.set_weights(target_weights)
         elif terminal and train_step % 200 == 0:
             model_t.set_weights(model.get_weights())
-
-        # display training output
-        if terminal and (len(episode_rewards) % arglist.save_rate == 0):
-            eval_reward = get_eval_reward(env, model, u)
-            with open(res, "a+") as f:
-                mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
-                            "train_episode_reward": np.round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
-                            "eval_episode_reward": np.round(np.mean(eval_reward), 3),
-                            "loss": round(loss.numpy(), 3),
-                            "time": round(time.time() - t_start, 3)}
-                print(mes_dict)
-                for item in list(mes_dict.values()):
-                    f.write("%s\t" % item)
-                f.write("\n")
-                f.close()
-        t_start = time.time()
 
 
 if __name__ == '__main__':
