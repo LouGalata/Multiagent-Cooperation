@@ -8,8 +8,8 @@ from keras.layers import Input, Dense, Lambda
 from keras.models import Model
 from tensorflow.keras import Sequential
 
-from utils.replay_buffer_iql import ReplayBuffer
-from utils.util import Utility
+from buffers.replay_buffer_iql import ReplayBuffer
+from commons import util as u
 
 
 def parse_args():
@@ -29,9 +29,9 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
     parser.add_argument("--batch-size", type=int, default=256, help="number of episodes to optimize at the same time")
     parser.add_argument("--loss-type", type=str, default="huber", help="Loss function: huber or mse")
-    parser.add_argument("--prioritized-replay", type=bool, default=True, help="Use Prioritized Experience Replay")
     parser.add_argument("--soft-update", type=bool, default=True, help="Mode of updating the target network")
     parser.add_argument("--clip-gradients", type=float, default=0.5, help="Norm of clipping gradients")
+    parser.add_argument("--use-gumbel", type=bool, default=True, help="Use Gumbel softmax")
 
     parser.add_argument("--decay-mode", type=str, default="exp2", help="linear or exp")
     parser.add_argument("--epsilon", type=float, default=1.0, help="epsilon exploration")
@@ -79,8 +79,8 @@ def IQL_net():
         med_dense = Dense(arglist.no_neurons,
                           kernel_initializer=tf.keras.initializers.he_uniform(),
                           activation=tf.keras.layers.LeakyReLU(alpha=0.1))(dense)
+        last_dense = Dense(no_actions,  activation='linear', kernel_initializer=tf.keras.initializers.he_uniform())(med_dense)
 
-        last_dense = Dense(no_actions, kernel_initializer=tf.keras.initializers.he_uniform())(med_dense)
         outputs.append(last_dense)
 
     V = tf.stack(outputs, axis=1)
@@ -103,15 +103,20 @@ def get_predictions(state, nets):
     return preds
 
 
-def get_actions(predictions, epsilon):
-    best_actions = tf.argmax(predictions, axis=-1)[0]
-    actions = []
-    for i in range(no_agents):
-        if np.random.rand() < epsilon:
-            actions.append(np.random.randint(0, no_actions))
-        else:
-            actions.append(best_actions.numpy()[i])
-    return np.array(actions)
+def get_actions(predictions, epsilon, u):
+    if arglist.use_gumbel:
+        actions = u.gumbel_softmax_sample(predictions)
+        actions = tf.squeeze(actions, axis=0)
+        return np.array(actions)
+    else:
+        best_actions = tf.argmax(predictions, axis=-1)[0]
+        actions = []
+        for i in range(no_agents):
+            if np.random.rand() < epsilon:
+                actions.append(np.random.randint(0, no_actions))
+            else:
+                actions.append(best_actions.numpy()[i])
+        return np.array(actions)
 
 
 def __build_conf():
@@ -129,10 +134,10 @@ def get_eval_reward(env, model, u):
         for i in range(arglist.max_episode_len):
             predictions = get_predictions(u.to_tensor(np.array(obs_n)), model)
             predictions = tf.squeeze(predictions, axis=0)
-            actions = [tf.argmax(prediction, axis=-1).numpy() for prediction in predictions]
-
+            if not arglist.use_gumbel:
+                predictions = tf.argmax(predictions, axis=-1)
             # Observe next state, reward and done value
-            new_obs_n, rew_n, done_n, _ = env.step(actions)
+            new_obs_n, rew_n, done_n, _ = env.step(predictions.numpy())
             obs_n = new_obs_n
             reward += rew_n[0]
             if all(done_n):
@@ -144,7 +149,8 @@ def get_eval_reward(env, model, u):
 def main():
     global no_actions, no_features, no_agents
     env = make_env(arglist.scenario)
-    env.discrete_action_input = True
+    if not arglist.use_gumbel:
+        env.discrete_action_input = True
 
     obs_shape_n = env.observation_space
     no_agents = env.n
@@ -155,7 +161,6 @@ def main():
     min_epsilon = arglist.min_epsilon
     max_epsilon = arglist.max_epsilon
 
-    u = Utility(no_agents, is_gat=True)
     u.create_seed(arglist.seed)
     # Velocity.x Velocity.y Pos.x Pos.y {Land.Pos.x Land.Pos.y}*10 {Ent.Pos.x Ent.Pos.y}*9
     no_features = obs_shape_n[0].shape[0]
@@ -183,7 +188,7 @@ def main():
     while True:
         episode_step += 1
         predictions = get_predictions(u.to_tensor(np.array(obs_n)), model)
-        actions = get_actions(predictions, epsilon)
+        actions = get_actions(predictions, epsilon, u)
         # Observe next state, reward and done value
         new_obs_n, rew_n, done_n, _ = env.step(actions)
         terminal = (episode_step >= arglist.max_episode_len)
@@ -220,26 +225,23 @@ def main():
             continue
 
         # Train the models
-        if replay_buffer.can_provide_sample(batch_size) and train_step % 100 == 0:
-
+        if train_step >= batch_size * arglist.max_episode_len and train_step % 100 == 0:
             state, actions, rewards, new_state, dones = replay_buffer.sample(batch_size)
+            # Calculate TD-target. The Model.predict() method returns numpy() array without taping the forward pass.
+            target_q_values = model_t(reformat_input(new_state))
+            # Apply VDN to reduce the agent-dimension
+            target_q_tot = tf.reduce_sum(target_q_values, axis=1)
+
+            # Apply max(Q) to obtain the TD-target
+            max_q_tot = tf.reduce_max(target_q_tot, axis=-1)
+            y = rewards + (1. - dones) * arglist.gamma * max_q_tot
             with tf.GradientTape() as tape:
-                # Calculate TD-target. The Model.predict() method returns numpy() array without taping the forward pass.
-                target_q_values = model_t(reformat_input(new_state))
-                # Apply VDN to reduce the agent-dimension
-                target_q_tot = tf.reduce_sum(target_q_values, axis=1)
-
-                # Apply max(Q) to obtain the TD-target
-                max_q_tot = tf.reduce_max(target_q_tot, axis=-1)
-                y = rewards + (1. - dones) * arglist.gamma * max_q_tot
-
                 # Predictions
-                action_one_hot = tf.one_hot(actions, no_actions, name='action_one_hot')
+                action_one_hot = tf.one_hot(tf.argmax(actions, axis=-1), no_actions, name='action_one_hot')
                 q_values = model(reformat_input(state))
                 # VDN summation
                 q_tot = tf.reduce_sum(q_values * action_one_hot, axis=1, name='q_acted')
                 pred = tf.reduce_sum(q_tot, axis=1)
-
                 if "huber" in arglist.loss_type:
                     loss = tf.reduce_sum(u.huber_loss(pred, tf.stop_gradient(y)))
                 elif "mse" in arglist.loss_type:
@@ -268,7 +270,7 @@ def main():
             model_t.set_weights(model.get_weights())
 
         # display training output
-        if replay_buffer.can_provide_sample(batch_size) and terminal and (len(episode_rewards) % arglist.save_rate == 0):
+        if train_step >= batch_size * arglist.max_episode_len and terminal and (len(episode_rewards) % arglist.save_rate==0):
             eval_reward = get_eval_reward(env, model, u)
             with open(res, "a+") as f:
                 mes_dict = {"steps": train_step, "episodes": len(episode_rewards),

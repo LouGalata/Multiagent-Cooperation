@@ -86,8 +86,8 @@ class ReplayBuffer(object):
             idxes = range(0, len(self._storage))
         return self._encode_sample(idxes)
 
-    def can_provide_sample(self, batch_size):
-        return len(self._storage) >= batch_size
+    def can_provide_sample(self, batch_size, max_episode_len):
+        return len(self._storage) >= batch_size * max_episode_len
 
     def collect(self):
         return self.sample(-1)

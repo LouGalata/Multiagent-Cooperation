@@ -8,8 +8,9 @@ from keras.layers import Input, Lambda, Dense
 from keras.models import Model
 from spektral.layers import GATConv
 from tensorflow.keras import Sequential
-from utils.util import Utility
-from utils.replay_buffer import ReplayBuffer
+
+from buffers.replay_buffer import ReplayBuffer
+from commons import util as u
 
 
 def parse_args():
@@ -121,12 +122,12 @@ def __build_conf():
     return model, model_t
 
 
-def get_eval_reward(env, model, u):
+def get_eval_reward(env, model):
     k_lst = list(range(arglist.no_neighbors + 2))[2:]  # [2,3]
     reward_total = []
     for _ in range(3):
         obs_n = env.reset()
-        adj = u.get_adj(obs_n, k_lst)
+        adj = u.Utility(no_agents, is_gat=True).get_adj(obs_n, k_lst)
         reward = 0
         for i in range(arglist.max_episode_len):
             predictions = get_predictions(u.to_tensor(np.array(obs_n)), adj, model)
@@ -135,7 +136,7 @@ def get_eval_reward(env, model, u):
 
             # Observe next state, reward and done value
             new_obs_n, rew_n, done_n, _ = env.step(actions)
-            adj = u.get_adj(new_obs_n, k_lst)
+            adj = u.Utility(no_agents, is_gat=True).get_adj(new_obs_n, k_lst)
             obs_n = new_obs_n
             reward += rew_n[0]
         reward_total.append(reward)
@@ -155,7 +156,6 @@ def main(arglist):
     epsilon_decay = arglist.epsilon_decay
     min_epsilon = arglist.min_epsilon
     max_epsilon = arglist.max_epsilon
-    u = Utility(no_agents, is_gat=True)
     u.create_seed(arglist.seed)
     k_lst = list(range(no_neighbors + 2))[2:]  # [2,3]
 
@@ -167,7 +167,7 @@ def main(arglist):
     init_loss = np.inf
     # Results
     episode_rewards = [0.0]  # sum of rewards for all agents
-    result_path = os.path.join("results",  arglist.exp_name)
+    result_path = os.path.join("results", arglist.exp_name)
     res = os.path.join(result_path, "%s.csv" % arglist.exp_name)
     if not os.path.exists(result_path):
         os.makedirs(result_path)
@@ -177,14 +177,15 @@ def main(arglist):
 
     t_start = time.time()
     obs_n = env.reset()
-    adj = u.get_adj(obs_n, k_lst)
+    init_util = u.Utility(no_agents, is_gat=True)
+    adj = init_util.get_adj(obs_n, k_lst)
 
     print('Starting iterations...')
     while True:
         episode_step += 1
         terminal = (episode_step >= arglist.max_episode_len)
         if episode_step % 3 == 0:
-            adj = u.get_adj(obs_n, k_lst)
+            adj = init_util.get_adj(obs_n, k_lst)
 
         predictions = get_predictions(u.to_tensor(np.array(obs_n)), adj, model)
         actions = get_actions(predictions, epsilon)
@@ -202,12 +203,15 @@ def main(arglist):
             obs_n = env.reset()
             if arglist.decay_mode.lower() == "linear":
                 # straight line equation wrapper by max operation -> max(min_value,(-mx + b))
-                epsilon = np.amax((min_epsilon, -((max_epsilon - min_epsilon) * train_step / arglist.max_episode_len) / arglist.e_lin_decay + 1.0))
+                epsilon = np.amax((min_epsilon, -((
+                                                              max_epsilon - min_epsilon) * train_step / arglist.max_episode_len) / arglist.e_lin_decay + 1.0))
             elif arglist.decay_mode.lower() == "exp":
                 # exponential's function Const(e^-t) wrapped by a min function
-                epsilon = np.amin((1, (min_epsilon + (max_epsilon - min_epsilon) * np.exp(-(train_step / arglist.max_episode_len - 1) /epsilon_decay))))
+                epsilon = np.amin((1, (min_epsilon + (max_epsilon - min_epsilon) * np.exp(
+                    -(train_step / arglist.max_episode_len - 1) / epsilon_decay))))
             else:
-                epsilon = min_epsilon + (max_epsilon - min_epsilon) * np.exp(-epsilon_decay * train_step / arglist.max_episode_len)
+                epsilon = min_epsilon + (max_epsilon - min_epsilon) * np.exp(
+                    -epsilon_decay * train_step / arglist.max_episode_len)
             episode_step = 0
             episode_rewards.append(0)
 
@@ -221,7 +225,7 @@ def main(arglist):
             continue
 
         # Train the models
-        if replay_buffer.can_provide_sample(batch_size) and train_step % 100 == 0:
+        if replay_buffer.can_provide_sample(batch_size, arglist.max_episode_len) and train_step % 100 == 0:
             # Pass a batch of states through the policy network to calculate the Q(s, a)
             state, adj_n, actions, rewards, new_state, dones = replay_buffer.sample(batch_size)
 
@@ -269,7 +273,7 @@ def main(arglist):
 
         # display training output
         if terminal and (len(episode_rewards) % arglist.save_rate == 0):
-            eval_reward = get_eval_reward(env, model, u)
+            eval_reward = get_eval_reward(env, model)
             with open(res, "a+") as f:
                 mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
                             "train_episode_reward": np.round(np.mean(episode_rewards[-arglist.save_rate:]), 3),

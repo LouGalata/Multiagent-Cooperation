@@ -6,7 +6,7 @@ import numpy as np
 import tensorflow as tf
 from keras.layers import Lambda
 import keras
-from utils.util import Utility
+from commons import util as u
 
 
 def parse_args():
@@ -23,7 +23,7 @@ def parse_args():
 
     # Evaluation
     parser.add_argument("--display", action="store_true", default=True)
-    parser.add_argument("--exp-name", type=str, default='self-iql2-v4', help="name of the experiment")
+    parser.add_argument("--exp-name", type=str, default='iql2s', help="name of the experiment")
     return parser.parse_args()
 
 
@@ -70,7 +70,8 @@ def main(arglist):
     obs_shape_n = env.observation_space
     no_agents = env.n
     no_neighbors = arglist.num_neighbors
-    u = Utility(no_agents, is_gat=arglist.use_gat, is_gcn=arglist.use_gcn, is_rnn=arglist.use_rnn)
+    init = u.Utility(no_agents, is_gat=arglist.use_gat, is_gcn=arglist.use_gcn, is_rnn=arglist.use_rnn)
+    u.create_seed(123)
     k_lst = list(range(no_neighbors + 2))[2:]  # [2,3]
 
     # Velocity.x Velocity.y Pos.x Pos.y {Land.Pos.x Land.Pos.y}*10 {Ent.Pos.x Ent.Pos.y}*9
@@ -81,7 +82,7 @@ def main(arglist):
 
     obs_n = env.reset()
     if arglist.use_gat or arglist.use_gcn:
-        adj = u.get_adj(obs_n, k_lst)
+        adj = init.get_adj(obs_n, k_lst)
     else:
         adj = None
     if arglist.use_rnn:
@@ -97,7 +98,7 @@ def main(arglist):
         # Observe next state, reward and done value
         new_obs_n, rew_n, done_n, _ = env.step(actions)
         if arglist.use_gat or arglist.use_gcn:
-            adj = u.get_adj(new_obs_n, k_lst)
+            adj = init.get_adj(new_obs_n, k_lst)
         if arglist.use_rnn:
             new_obs_n = u.refresh_history(np.copy(obs_n), new_obs_n)
         obs_n = new_obs_n

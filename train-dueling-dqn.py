@@ -9,8 +9,8 @@ from keras.layers import Input, Lambda, Dense, Add
 from keras.models import Model
 from spektral.layers import GATConv
 from tensorflow.keras import Sequential
-from utils.replay_buffer import ReplayBuffer
-from utils.util import Utility
+from buffers.replay_buffer import ReplayBuffer
+from commons.util import Utility
 
 
 def parse_args():
@@ -234,7 +234,7 @@ def main(arglist):
             continue
 
         # Train the models
-        if replay_buffer.can_provide_sample(batch_size) and train_step % 100 == 0:
+        if replay_buffer.can_provide_sample(batch_size, arglist.max_episode_len) and train_step % 100 == 0:
             state, adj_n, actions, rewards, new_state, dones = replay_buffer.sample(batch_size)
 
             with tf.GradientTape() as tape:
