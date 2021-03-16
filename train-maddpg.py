@@ -147,8 +147,7 @@ def main():
 
         if not arglist.restore_fp:
             pol_loss_total = []
-            if len(replay_buffer) >= arglist.batch_size + 1:
-            # if len(replay_buffer) >= arglist.batch_size * arglist.max_episode_len:
+            if len(replay_buffer) >= arglist.batch_size * arglist.max_episode_len:
                 if train_step % arglist.update_rate == 0:
                     # Sample: Shapes --> (no-agents, batch_size, features)
                     state, actions, rewards, new_state, dones = replay_buffer.sample(arglist.batch_size)
