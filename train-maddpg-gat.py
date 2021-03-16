@@ -1,17 +1,14 @@
 import argparse
 import os
 import time
-from typing import List
 
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 
-from buffers.replay_buffer_iql import ReplayBuffer, EfficientReplayBuffer
+from buffers.replay_buffer_iql import EfficientReplayBuffer
 from commons import util as u
-from models.centralized_critic import MADDPGCriticNetwork
-
-from models.maddpg import MADDPGAgent
+from models.centralized_critic_gat import MADDPGCriticNetwork
+from models.maddpg_gat import MADDPGAgent
 
 
 def parse_args():
@@ -40,7 +37,6 @@ def parse_args():
     parser.add_argument("--epsilon-decay", type=float, default=0.0003, help="exponantial epsilon decay")
     parser.add_argument("--min-epsilon", type=float, default=0.01, help="min epsilon")
     parser.add_argument("--max-epsilon", type=float, default=1.0, help="max epsilon")
-
 
     # Q-learning training parameters
     parser.add_argument("--no-layers", type=int, default=2, help="number dense layers")
@@ -94,6 +90,7 @@ def main():
     if not os.path.exists(result_path):
         os.makedirs(result_path)
 
+    k_lst = list(range(arglist.no_neighbors + 2))[2:]
     critic = MADDPGCriticNetwork(arglist.no_layers, arglist.no_neurons, arglist.lr, obs_shape_n, act_shape_n)
     critic_target = MADDPGCriticNetwork(arglist.no_layers, arglist.no_neurons, arglist.lr, obs_shape_n, act_shape_n)
     critic_target.model.set_weights(critic.model.get_weights())
@@ -101,7 +98,6 @@ def main():
     agents = get_agents(obs_shape_n, act_shape_n, result_path)
     obs_n = env.reset()
     replay_buffer = EfficientReplayBuffer(arglist.max_buffer_size, no_agents, obs_shape_n, act_shape_n)  # Init Buffer
-    k_lst = list(range(arglist.no_neighbors + 2))[2:]
     # Load previous results if necessary
     if arglist.restore_fp:
         print('Loading previous state...')
@@ -148,20 +144,24 @@ def main():
         if not arglist.restore_fp:
             pol_loss_total = []
             if len(replay_buffer) >= arglist.batch_size + 1:
-            # if len(replay_buffer) >= arglist.batch_size * arglist.max_episode_len:
+                # if len(replay_buffer) >= arglist.batch_size * arglist.max_episode_len:
                 if train_step % arglist.update_rate == 0:
                     # Sample: Shapes --> (no-agents, batch_size, features)
                     state, actions, rewards, new_state, dones = replay_buffer.sample(arglist.batch_size)
                     target_act_next = [a.target_action(obs) for a, obs in zip(agents, new_state)]
-                    target_q_next = critic_target.predict(new_state, target_act_next)
+                    adjacency = [u.get_adj(obs, k_lst, no_agents, is_gat=True) for obs in
+                                 np.swapaxes(state, 1, 0)]
+                    adjacency = np.array(adjacency)  # shape: (batch_size, no_agents, no_agents)
+
+                    target_q_next = critic_target.predict(new_state, target_act_next, adjacency)
                     q_train_target = rewards + (1. - dones) * arglist.gamma * target_q_next
 
-                    loss, _ = critic.train_step(state, actions, q_train_target)
+                    loss, _ = critic.train_step(state, actions, adjacency, q_train_target)
                     update_target_networks(critic, critic_target)
                     critic.save(result_path)
 
                     for agent in agents:
-                        pol_loss = agent.update(state, actions, critic)
+                        pol_loss = agent.update(state, actions, adjacency, critic)
                         pol_loss_total.append(pol_loss.numpy())
                 if train_step % arglist.save_rate == 0:
                     with open(res, "a+") as f:

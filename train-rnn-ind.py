@@ -113,6 +113,16 @@ def get_actions(predictions, epsilon: float):
     return np.array(actions)
 
 
+def update_target_networks(policy_net, target_policy_net):
+    def update_network(net: Model, target_net: Model):
+        net_weights = np.array(net.get_weights())
+        target_net_weights = np.array(target_net.get_weights())
+        new_weights = arglist.tau * net_weights + (1.0 - arglist.tau) * target_net_weights
+        target_net.set_weights(new_weights)
+
+    update_network(policy_net, target_policy_net)
+
+
 def __build_conf():
     model = graph_net(arglist)
     model_t = graph_net(arglist)
@@ -159,7 +169,6 @@ def main(arglist):
     no_actions = env.action_space[0].n
     model, model_t = __build_conf()
     optimizer = tf.keras.optimizers.Adam(lr=arglist.lr)
-    init_loss = np.inf
     # Results
     episode_rewards = [0.0]  # sum of rewards for all agents
     result_path = os.path.join("results", arglist.exp_name)
@@ -244,10 +253,7 @@ def main(arglist):
                 gradients = tape.gradient(loss, model.trainable_variables)
                 local_clipped = u.clip_by_local_norm(gradients, 0.1)
             optimizer.apply_gradients(zip(local_clipped, model.trainable_variables))
-
-            if loss.numpy() < init_loss:
-                tf.saved_model.save(model, result_path)
-                init_loss = loss.numpy()
+            tf.saved_model.save(model, result_path)
 
             # display training output
             if train_step % arglist.save_rate == 0:
@@ -266,15 +272,7 @@ def main(arglist):
                 t_start = time.time()
 
         # train target model
-        if arglist.soft_update:
-            weights = model.get_weights()
-            target_weights = model_t.get_weights()
-
-            for w in range(len(weights)):
-                target_weights[w] = arglist.tau * weights[w] + (1 - arglist.tau) * target_weights[w]
-            model_t.set_weights(target_weights)
-        elif terminal and train_step % 200 == 0:
-            model_t.set_weights(model.get_weights())
+        update_target_networks(model, model_t)
 
 
 if __name__ == '__main__':

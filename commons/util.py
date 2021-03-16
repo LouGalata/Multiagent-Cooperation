@@ -141,3 +141,4 @@ def make_env(scenario_name, no_agents):
     world = scenario.make_world(no_agents=no_agents)
     env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
     return env
+

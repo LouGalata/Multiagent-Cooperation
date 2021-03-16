@@ -33,7 +33,6 @@ class MADDPGAgent(object):
         """
         Implements the updates of the target networks, which slowly follow the real network.
         """
-
         def update_target_network(net: tf.keras.Model, target_net: tf.keras.Model):
             net_weights = np.array(net.get_weights())
             target_net_weights = np.array(target_net.get_weights())
@@ -42,9 +41,9 @@ class MADDPGAgent(object):
 
         update_target_network(self.policy.model, self.policy_target.model)
 
-    def update(self, obs_n, acts_n, critic):
+    def update(self, obs_n, acts_n, adjacency, critic):
         # Train the policy.
-        policy_loss = self.policy.train(obs_n, acts_n, critic)
+        policy_loss = self.policy.train(obs_n, acts_n, adjacency, critic)
         # Update target networks.
         self.update_target_networks(self.tau)
         self.save(self.result_path)
@@ -110,9 +109,8 @@ class MADDPGPolicyNetwork(object):
             outputs = u.gumbel_softmax_sample(outputs)
         return outputs
 
-    @tf.function
     # The state and the action that executed in the environment from an agent
-    def train(self, obs_n, act_n, q_network):
+    def train(self, obs_n, act_n, adjacency, q_network):
         with tf.GradientTape() as tape:
             # linear output layer
             x = self.forward_pass(obs_n[self.agent_index])
@@ -124,7 +122,9 @@ class MADDPGPolicyNetwork(object):
             else:
                 act_n[self.agent_index] = x
 
-            q_value = q_network.predict(obs_n, act_n)
+            concatenated_input = tf.concat([obs_n, act_n], axis=-1)
+            concatenated_input = tf.transpose(concatenated_input, [1, 0, 2])
+            q_value = q_network.model([concatenated_input, adjacency])
             policy_regularization = tf.math.reduce_mean(tf.math.square(x))
             loss = -tf.math.reduce_mean(q_value) + 1e-3 * policy_regularization  # gradient plus regularization
 

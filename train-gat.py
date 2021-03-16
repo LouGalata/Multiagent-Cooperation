@@ -154,7 +154,6 @@ def main(arglist):
     no_actions = env.action_space[0].n
     model, model_t = __build_conf()
     optimizer = tf.keras.optimizers.Adam(lr=arglist.lr)
-    init_loss = np.inf
     # Results
     episode_rewards = [0.0]  # sum of rewards for all agents
     result_path = os.path.join("results", arglist.exp_name)
@@ -245,9 +244,7 @@ def main(arglist):
                 local_clipped = u.clip_by_local_norm(gradients, 0.1)
             optimizer.apply_gradients(zip(local_clipped, model.trainable_variables))
 
-            if loss.numpy() < init_loss:
-                tf.saved_model.save(model, result_path)
-                init_loss = loss.numpy()
+            tf.saved_model.save(model, result_path)
 
         # train target model
         if arglist.soft_update:

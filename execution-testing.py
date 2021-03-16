@@ -59,7 +59,6 @@ def main(arglist):
     obs_shape_n = env.observation_space
     no_agents = env.n
     no_neighbors = arglist.num_neighbors
-    init = u.Utility(no_agents, is_gat=arglist.use_gat, is_gcn=arglist.use_gcn, is_rnn=arglist.use_rnn)
     u.create_seed(123)
     k_lst = list(range(no_neighbors + 2))[2:]  # [2,3]
 
@@ -71,7 +70,7 @@ def main(arglist):
 
     obs_n = env.reset()
     if arglist.use_gat or arglist.use_gcn:
-        adj = init.get_adj(obs_n, k_lst)
+        adj = u.get_adj(obs_n, k_lst, is_gat=arglist.use_gat, is_gcn=arglist.use_gcn)
     else:
         adj = None
     if arglist.use_rnn:
@@ -87,7 +86,7 @@ def main(arglist):
         # Observe next state, reward and done value
         new_obs_n, rew_n, done_n, _ = env.step(actions)
         if arglist.use_gat or arglist.use_gcn:
-            adj = init.get_adj(new_obs_n, k_lst)
+            adj = u.get_adj(obs_n, k_lst, is_gat=arglist.use_gat, is_gcn=arglist.use_gcn)
         if arglist.use_rnn:
             new_obs_n = u.refresh_history(np.copy(obs_n), new_obs_n)
         obs_n = new_obs_n

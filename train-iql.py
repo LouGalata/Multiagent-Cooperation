@@ -136,6 +136,16 @@ def get_eval_reward(env, model):
     return reward_total
 
 
+def update_target_networks(policy_net, target_policy_net):
+    def update_network(net: Model, target_net: Model):
+        net_weights = np.array(net.get_weights())
+        target_net_weights = np.array(target_net.get_weights())
+        new_weights = arglist.tau * net_weights + (1.0 - arglist.tau) * target_net_weights
+        target_net.set_weights(new_weights)
+
+    update_network(policy_net, target_policy_net)
+
+
 def main():
     global no_actions, no_features, no_agents
     env = u.make_env(arglist.scenario, arglist.no_agents)
@@ -194,7 +204,7 @@ def main():
             if arglist.decay_mode.lower() == "linear":
                 # straight line equation wrapper by max operation -> max(min_value,(-mx + b))
                 epsilon = np.amax((min_epsilon, -((
-                                                              max_epsilon - min_epsilon) * train_step / arglist.max_episode_len) / arglist.e_lin_decay + 1.0))
+                                                          max_epsilon - min_epsilon) * train_step / arglist.max_episode_len) / arglist.e_lin_decay + 1.0))
             elif arglist.decay_mode.lower() == "exp":
                 # exponential's function Const(e^-t) wrapped by a min function
                 epsilon = np.amin((1, (min_epsilon + (max_epsilon - min_epsilon) * np.exp(
@@ -243,22 +253,10 @@ def main():
                 gradients = tape.gradient(loss, model.trainable_variables)
                 local_clipped = u.clip_by_local_norm(gradients, arglist.clip_gradients)
             optimizer.apply_gradients(zip(local_clipped, model.trainable_variables))
-
-            # train target model
-            if loss.numpy() < init_loss:
-                tf.saved_model.save(model, result_path)
-                init_loss = loss.numpy()
+            tf.saved_model.save(model, result_path)
 
         # train target model
-        if arglist.soft_update:
-            weights = model.get_weights()
-            target_weights = model_t.get_weights()
-
-            for w in range(len(weights)):
-                target_weights[w] = arglist.tau * weights[w] + (1 - arglist.tau) * target_weights[w]
-            model_t.set_weights(target_weights)
-        elif terminal and train_step % 200 == 0:
-            model_t.set_weights(model.get_weights())
+        update_target_networks(model, model_t)
 
         # display training output
         if train_step >= batch_size * arglist.max_episode_len and terminal and (
