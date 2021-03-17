@@ -1,6 +1,6 @@
 import random
 import numpy as np
-
+from commons import SumSegmentTree, MinSegmentTree
 
 class ReplayBuffer(object):
     def __init__(self, size):
