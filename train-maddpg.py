@@ -1,24 +1,19 @@
 import argparse
 import os
 import time
-from typing import List
-
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 
-from buffers.replay_buffer_iql import ReplayBuffer, EfficientReplayBuffer
+from buffers.replay_buffer_iql import EfficientReplayBuffer
 from commons import util as u
-from models.centralized_critic import MADDPGCriticNetwork
-
-from models.maddpg import MADDPGAgent
+from agents.centralized_maddpg import MADDPGAgent, MADDPGCriticNetwork
 
 
 def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
-    parser.add_argument("--no-agents", type=int, default=5, help="number of agents")
+    parser.add_argument("--no-agents", type=int, default=2, help="number of agents")
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--no-episodes", type=int, default=30000, help="number of episodes")
     parser.add_argument("--no-neighbors", type=int, default=2, help="number of neigbors to cooperate")
@@ -31,7 +26,7 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
     parser.add_argument("--batch-size", type=int, default=512, help="number of episodes to optimize at the same time")
     parser.add_argument("--loss-type", type=str, default="huber", help="Loss function: huber or mse")
-    parser.add_argument("--use-gumbel", type=bool, default=True, help="Use Gumbel softmax")
+    parser.add_argument("--use-gumbel", type=bool, default=False, help="Use Gumbel softmax")
 
     # Exploration strategies
     parser.add_argument("--decay-mode", type=str, default="exp2", help="linear or exp")
@@ -50,9 +45,9 @@ def parse_args():
     parser.add_argument("--tau", type=float, default=0.01, help="smooth weights copy to target model")
 
     # Evaluation
-    parser.add_argument("--restore-fp", type=bool, default=False, help="Load saved model")
-    parser.add_argument("--display", action="store_true", default=False)
-    parser.add_argument("--exp-name", type=str, default='maddpg5-gat-1', help="name of the experiment")
+    parser.add_argument("--restore-fp", type=bool, default=True, help="Load saved model")
+    parser.add_argument("--display", action="store_true", default=True)
+    parser.add_argument("--exp-name", type=str, default='maddpg2', help="name of the experiment")
     parser.add_argument("--update-rate", type=int, default=100,
                         help="update model once every time this many episodes are completed")
     parser.add_argument("--save-rate", type=int, default=300,
@@ -83,7 +78,7 @@ def update_target_networks(critic_net, target_critic_net):
 
 def main():
     no_agents = arglist.no_agents
-    u.create_seed(arglist.seed)
+    # u.create_seed(arglist.seed)
     env = u.make_env(arglist.scenario, no_agents)
 
     obs_shape_n = u.space_n_to_shape_n(env.observation_space)
@@ -99,6 +94,7 @@ def main():
     critic_target.model.set_weights(critic.model.get_weights())
 
     agents = get_agents(obs_shape_n, act_shape_n, result_path)
+
     obs_n = env.reset()
     replay_buffer = EfficientReplayBuffer(arglist.max_buffer_size, no_agents, obs_shape_n, act_shape_n)  # Init Buffer
     k_lst = list(range(arglist.no_neighbors + 2))[2:]
@@ -108,7 +104,7 @@ def main():
         for ag_idx, agent in enumerate(agents):
             fp = os.path.join(result_path, 'agent_{}'.format(ag_idx))
             agent.load(fp)
-        critic.load(result_path)
+
 
     episode_step = 0
     train_step = 0
@@ -138,7 +134,6 @@ def main():
         if done:
             if arglist.restore_fp:
                 pd.DataFrame(testing_rewards).to_csv("results/" + arglist.exp_name + "/testing_rewards.csv")
-                break
             obs_n = env.reset()
             episode_step = 0
             episode_rewards.append(0)

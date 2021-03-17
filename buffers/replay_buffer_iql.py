@@ -177,3 +177,76 @@ class EfficientReplayBuffer(object):
         done = self._done[indices]
         return obs_n, acts_n, rew, next_obs_n, done
 
+
+class PrioritizedReplayBuffer(EfficientReplayBuffer):
+    def __init__(self, size, n_agents, obs_shape_n, act_shape_n, alpha):
+        super(PrioritizedReplayBuffer, self).__init__(size, n_agents, obs_shape_n, act_shape_n)
+        self.alpha = alpha
+        for idx in range(n_agents):
+            self._obs_n.append(np.empty([size, obs_shape_n[idx, 0]], dtype=np.float32))
+        assert alpha >= 0
+        self._alpha = alpha
+
+        it_capacity = 1
+        while it_capacity < size:
+            it_capacity *= 2
+
+        self._it_sum = SumSegmentTree(it_capacity)
+        self._it_min = MinSegmentTree(it_capacity)
+        self._max_priority = 1.0
+
+    def add(self, obs_n, action_n, reward, obs_next_n, done):
+        idx = self._next_idx
+        super(PrioritizedReplayBuffer, self).add(obs_n, action_n, reward,
+                                                 obs_next_n, done)
+        self._it_sum[idx] = self._max_priority ** self._alpha
+        self._it_min[idx] = self._max_priority ** self._alpha
+
+    def _sample_indices_proportional(self, batch_size):
+        indices = []
+        for batch_idx in range(batch_size):
+            mass = random.random() * self._it_sum.sum(0, len(self) - 1)
+            idx = self._it_sum.find_prefixsum_idx(mass)
+            indices.append(idx)
+        return indices
+
+    def sample(self, batch_size, beta=0):
+        indices = self._sample_indices_proportional(batch_size)
+        weights = []
+        priority_min = self._it_min.min() / self._it_sum.sum()
+        max_weight = (priority_min * len(self)) ** (-beta)
+        for idx in indices:
+            p_sample = self._it_sum[idx] / self._it_sum.sum()
+            weight = (p_sample * len(self)) ** (-beta)
+            weights.append(weight / max_weight)
+        weights = np.array(weights, dtype=np.float32)
+
+        obs_n = []
+        acts_n = []
+        next_obs_n = []
+        for ag_idx in range(self._n_agents):
+            obs_n.append(self._obs_n[ag_idx][indices])
+            acts_n.append(self._acts_n[ag_idx][indices].copy())
+            next_obs_n.append(self._obs_tp1_n[ag_idx][indices])
+
+        rew = self._reward[indices]
+        done = self._done[indices]
+        return obs_n, acts_n, rew, next_obs_n, done, weights, indices
+
+    def update_priorities(self, indices, priorities):
+        """
+        Update priorities of sampled transitions.
+        sets priority of transition at index idxes[i] in buffer
+        to priorities[i].
+        :param indices: ([int]) List of indices of sampled transitions
+        :param priorities: ([float]) List of updated priorities corresponding to transitions at the sampled idxes
+            denoted by variable `idxes`.
+        """
+        assert len(indices) == len(priorities)
+        for idx, priority in zip(indices, priorities):
+            assert priority > 0
+            assert 0 <= idx < len(self)
+            self._it_sum[idx] = priority ** self._alpha
+            self._it_min[idx] = priority ** self._alpha
+
+            self._max_priority = max(self._max_priority, priority)

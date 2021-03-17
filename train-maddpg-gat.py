@@ -7,8 +7,7 @@ import pandas as pd
 
 from buffers.replay_buffer_iql import EfficientReplayBuffer
 from commons import util as u
-from models.centralized_critic_gat import MADDPGCriticNetwork
-from models.maddpg_gat import MADDPGAgent
+from agents.centralized_maddpg_gat import MADDPGAgent, MADDPGCriticNetwork
 
 
 def parse_args():

@@ -6,7 +6,6 @@ import numpy as np
 import tensorflow as tf
 from keras.layers import Input, Dense, Lambda
 from keras.models import Model
-from tensorflow.keras import Sequential
 
 from buffers.replay_buffer_iql import ReplayBuffer
 from commons import util as u
@@ -167,7 +166,6 @@ def main():
     no_actions = env.action_space[0].n
     model, model_t = __build_conf()
     optimizer = tf.keras.optimizers.RMSprop(lr=arglist.lr)
-    init_loss = np.inf
 
     # Results
     episode_rewards = [0.0]  # sum of rewards for all agents

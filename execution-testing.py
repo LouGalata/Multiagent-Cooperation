@@ -13,17 +13,17 @@ def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
-    parser.add_argument("--no-agents", type=int, default=2, help="number of agents")
+    parser.add_argument("--no-agents", type=int, default=6, help="number of agents")
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--num-neighbors", type=int, default=2, help="number of neigbors to cooperate")
     parser.add_argument("--use-gat", type=bool, default=False, help="use of gat netwrok or not")
     parser.add_argument("--use-gcn", type=bool, default=False, help="use of gat netwrok or not")
-    parser.add_argument("--use-rnn", type=bool, default=False, help="use of rnn netwrok or not")
-    parser.add_argument("--history-size", type=int, default=6, help="timestep of Rnn memory")
+    parser.add_argument("--use-rnn", type=bool, default=True, help="use of rnn netwrok or not")
+    parser.add_argument("--history-size", type=int, default=4, help="timestep of Rnn memory")
 
     # Evaluation
     parser.add_argument("--display", action="store_true", default=True)
-    parser.add_argument("--exp-name", type=str, default='iql2s', help="name of the experiment")
+    parser.add_argument("--exp-name", type=str, default='irnn6', help="name of the experiment")
     return parser.parse_args()
 
 
@@ -53,7 +53,7 @@ def main(arglist):
     # Global variables
     global num_actions, feature_dim, no_agents
     # Create environment
-    env = u.make_env(arglist.scenario)
+    env = u.make_env(arglist.scenario, no_agents=arglist.no_agents)
     env.discrete_action_input = True
 
     obs_shape_n = env.observation_space
