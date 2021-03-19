@@ -5,12 +5,13 @@ from buffers.replay_buffer_iql import EfficientReplayBuffer, PrioritizedReplayBu
 from commons.linear_schedule import LinearSchedule
 
 class AbstractAgent(ABC):
-    def __init__(self, buff_size, obs_shape_n, act_shape_n, batch_size, prioritized_replay=False,
+    def __init__(self, buff_size, history_size, obs_shape_n, act_shape_n, batch_size, prioritized_replay=False,
                  alpha=0.6, max_step=None, initial_beta=0.6, prioritized_replay_eps=1e-6):
         self.batch_size = batch_size
         self.prioritized_replay_eps = prioritized_replay_eps
         self.act_shape_n = act_shape_n
         self.obs_shape_n = obs_shape_n
+        self.history_size = history_size
         if prioritized_replay:
             self.replay_buffer = PrioritizedReplayBuffer(int(buff_size), len(obs_shape_n),
                                                          obs_shape_n, act_shape_n, alpha)
@@ -18,7 +19,7 @@ class AbstractAgent(ABC):
             self.beta_schedule = LinearSchedule(max_step, 1.0, initial_beta)
         else:
             self.replay_buffer = EfficientReplayBuffer(int(buff_size), len(obs_shape_n),
-                                                       obs_shape_n, act_shape_n)
+                                                       obs_shape_n, act_shape_n, history_size)
         self.prioritized_replay = prioritized_replay
 
     @abstractmethod

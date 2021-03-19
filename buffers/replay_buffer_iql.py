@@ -91,7 +91,7 @@ class ReplayBuffer(object):
 
 
 class EfficientReplayBuffer(object):
-    def __init__(self, size, n_agents, obs_shape_n, act_shape_n):
+    def __init__(self, size, n_agents, obs_shape_n, act_shape_n, history_size=0):
         """Create Prioritized Replay buffer.
 
         Parameters
@@ -103,11 +103,18 @@ class EfficientReplayBuffer(object):
         self._obs_n = []
         self._acts_n = []
         self._obs_tp1_n = []
+        self.history_size = history_size
         self._n_agents = n_agents
-        for idx in range(n_agents):
-            self._obs_n.append(np.empty([size, obs_shape_n[idx, 0]], dtype=np.float32))
-            self._acts_n.append(np.empty([size, act_shape_n[idx][0]], dtype=np.float32))
-            self._obs_tp1_n.append(np.empty([size, obs_shape_n[idx, 0]], dtype=np.float32))
+        if history_size == 0:
+            for idx in range(n_agents):
+                self._obs_n.append(np.empty([size, obs_shape_n[idx, 0]], dtype=np.float32))
+                self._acts_n.append(np.empty([size, act_shape_n[idx][0]], dtype=np.float32))
+                self._obs_tp1_n.append(np.empty([size, obs_shape_n[idx, 0]], dtype=np.float32))
+        else:
+            for idx in range(n_agents):
+                self._obs_n.append(np.empty([size, history_size, obs_shape_n[idx, 0]], dtype=np.float32))
+                self._acts_n.append(np.empty([size, act_shape_n[idx][0]], dtype=np.float32))
+                self._obs_tp1_n.append(np.empty([size, history_size, obs_shape_n[idx, 0]], dtype=np.float32))
         self._done = np.empty([size], dtype=np.float32)
         self._reward = np.empty([size], dtype=np.float32)
         self._maxsize = size
