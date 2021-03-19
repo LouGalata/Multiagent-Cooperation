@@ -57,7 +57,7 @@ class RLLogger(object):
 
         self.save_rate = save_rate
 
-    def record_episode_end(self, agents):
+    def record_episode_end(self, agents, testing):
         """
         Records an episode having ended.
         If save rate is reached, saves the models and prints some metrics.
@@ -79,7 +79,8 @@ class RLLogger(object):
         if self.episode_count % self.save_rate == 0:
             self.print_metrics()
             self.calculate_means()
-            self.save_models(agents)
+            if not testing:
+                self.save_models(agents, self.episode_count)
 
     def save_logger(self, fp, value, step, ag_idx=None, td_loss=None):
         if fp == "episode_reward":
@@ -131,9 +132,11 @@ class RLLogger(object):
                 [np.mean(rew[-self.save_rate:-1]) for rew in self.agent_rewards], round(time.time() - self.t_last_print, 3)))
         self.t_last_print = time.time()
 
-    def save_models(self, agents):
+    def save_models(self, agents, episode):
         for idx, agent in enumerate(agents):
-            agent.save(os.path.join(self.model_path, 'agent_{}'.format(idx)))
+            episode = int(episode // 100)
+            fp = os.path.join(self.model_path, 'ep{}'.format(episode))
+            agent.save(os.path.join(fp, 'agent_{}'.format(idx)))
 
     def calculate_means(self):
         self.final_ep_rewards.append(np.mean(self.episode_rewards[-self.save_rate:-1]))

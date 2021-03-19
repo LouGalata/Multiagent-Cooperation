@@ -74,6 +74,7 @@ def reshape_state(state, history_size):
     return np.tile(np.expand_dims(state, axis=1), (1, history_size, 1))
 
 
+
 def gumbel_softmax_sample(logits):
     """
     Produces Gumbel softmax samples from the input log-probabilities (logits).

@@ -14,7 +14,7 @@ def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
-    parser.add_argument("--no-agents", type=int, default=5, help="number of agents")
+    parser.add_argument("--no-agents", type=int, default=2, help="number of agents")
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--no-episodes", type=int, default=30000, help="number of episodes")
     parser.add_argument("--no-neighbors", type=int, default=2, help="number of neigbors to cooperate")
@@ -27,7 +27,7 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
     parser.add_argument("--batch-size", type=int, default=512, help="number of episodes to optimize at the same time")
     parser.add_argument("--loss-type", type=str, default="huber", help="Loss function: huber or mse")
-    parser.add_argument("--use-gumbel", type=bool, default=True, help="Use Gumbel softmax")
+    # parser.add_argument("--use-gumbel", type=bool, default=False, help="Use Gumbel softmax")
 
     # Exploration strategies
     parser.add_argument("--decay-mode", type=str, default="exp2", help="linear or exp")
@@ -45,9 +45,9 @@ def parse_args():
     parser.add_argument("--tau", type=float, default=0.01, help="smooth weights copy to target model")
 
     # Evaluation
-    parser.add_argument("--restore-fp", type=bool, default=False, help="Load saved model")
-    parser.add_argument("--display", action="store_true", default=False)
-    parser.add_argument("--exp-name", type=str, default='maddpg5-gat-1', help="name of the experiment")
+    parser.add_argument("--restore-fp", type=bool, default=True, help="Load saved model")
+    parser.add_argument("--display", action="store_true", default=True)
+    parser.add_argument("--exp-name", type=str, default='maddpg2', help="name of the experiment")
     parser.add_argument("--update-rate", type=int, default=100,
                         help="update model once every time this many episodes are completed")
     parser.add_argument("--save-rate", type=int, default=300,
@@ -59,8 +59,9 @@ def get_agents(obs_shape_n, act_shape_n, path):
     agents = []
     for agent_idx in range(arglist.no_agents):
         fp = os.path.join(path, 'agent_{}'.format(agent_idx))
+        use_gumbel = not arglist.restore_fp
         agent = MADDPGAgent(obs_shape_n, act_shape_n, agent_idx, arglist.lr, arglist.no_layers, arglist.no_neurons,
-                            fp, arglist.tau, arglist.use_gumbel)
+                            fp, arglist.tau, use_gumbel)
 
         agents.append(agent)
     return agents

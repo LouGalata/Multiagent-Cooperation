@@ -4,6 +4,7 @@ import time
 import numpy as np
 import pandas as pd
 
+import tensorflow as tf
 from buffers.replay_buffer_iql import EfficientReplayBuffer
 from commons import util as u
 from agents.centralized_maddpg import MADDPGAgent, MADDPGCriticNetwork
@@ -20,21 +21,13 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=1, help="seed")
 
     # Experience Replay
-    parser.add_argument("--max-buffer-size", type=int, default=500000, help="maximum buffer capacity")
+    parser.add_argument("--max-buffer-size", type=int, default=1e6, help="maximum buffer capacity")
 
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
     parser.add_argument("--batch-size", type=int, default=512, help="number of episodes to optimize at the same time")
     parser.add_argument("--loss-type", type=str, default="huber", help="Loss function: huber or mse")
     parser.add_argument("--use-gumbel", type=bool, default=False, help="Use Gumbel softmax")
-
-    # Exploration strategies
-    parser.add_argument("--decay-mode", type=str, default="exp2", help="linear or exp")
-    parser.add_argument("--epsilon", type=float, default=1.0, help="epsilon exploration")
-    parser.add_argument("--e-lin-decay", type=float, default=0.0001, help="linear epsilon decay")
-    parser.add_argument("--epsilon-decay", type=float, default=0.0003, help="exponantial epsilon decay")
-    parser.add_argument("--min-epsilon", type=float, default=0.01, help="min epsilon")
-    parser.add_argument("--max-epsilon", type=float, default=1.0, help="max epsilon")
 
 
     # Q-learning training parameters
@@ -45,10 +38,10 @@ def parse_args():
     parser.add_argument("--tau", type=float, default=0.01, help="smooth weights copy to target model")
 
     # Evaluation
-    parser.add_argument("--restore-fp", type=bool, default=True, help="Load saved model")
-    parser.add_argument("--display", action="store_true", default=True)
-    parser.add_argument("--exp-name", type=str, default='maddpg2', help="name of the experiment")
-    parser.add_argument("--update-rate", type=int, default=100,
+    parser.add_argument("--restore-fp", type=bool, default=False, help="Load saved model")
+    parser.add_argument("--display", action="store_true", default=False)
+    parser.add_argument("--exp-name", type=str, default='self-maddpg2', help="name of the experiment")
+    parser.add_argument("--update-rate", type=int, default=10,
                         help="update model once every time this many episodes are completed")
     parser.add_argument("--save-rate", type=int, default=300,
                         help="save model once every time this many episodes are completed")
@@ -78,7 +71,7 @@ def update_target_networks(critic_net, target_critic_net):
 
 def main():
     no_agents = arglist.no_agents
-    # u.create_seed(arglist.seed)
+    u.create_seed(arglist.seed)
     env = u.make_env(arglist.scenario, no_agents)
 
     obs_shape_n = u.space_n_to_shape_n(env.observation_space)
@@ -96,7 +89,7 @@ def main():
     agents = get_agents(obs_shape_n, act_shape_n, result_path)
 
     obs_n = env.reset()
-    replay_buffer = EfficientReplayBuffer(arglist.max_buffer_size, no_agents, obs_shape_n, act_shape_n)  # Init Buffer
+    replay_buffer = EfficientReplayBuffer(int(arglist.max_buffer_size), no_agents, obs_shape_n, act_shape_n)  # Init Buffer
     k_lst = list(range(arglist.no_neighbors + 2))[2:]
     # Load previous results if necessary
     if arglist.restore_fp:
@@ -155,7 +148,7 @@ def main():
                     critic.save(result_path)
 
                     for agent in agents:
-                        pol_loss = agent.update(state, actions, critic)
+                        pol_loss = agent.update(state, actions, critic, train_step)
                         pol_loss_total.append(pol_loss.numpy())
                 if train_step % arglist.save_rate == 0:
                     with open(res, "a+") as f:
@@ -176,6 +169,7 @@ def main():
 
 
 if __name__ == '__main__':
+    tf.autograph.set_verbosity(0, True)
     np.warnings.filterwarnings('ignore', category=np.VisibleDeprecationWarning)
     arglist = parse_args()
     main()

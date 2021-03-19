@@ -14,6 +14,7 @@ from sacred.observers import FileStorageObserver
 
 from commons.logger import RLLogger
 from agents import MADDPGAgent, MATD3Agent, MAGATAgent
+
 from agents.AbstractAgent import AbstractAgent
 from environments.multiagent.environment import MultiAgentEnv
 from commons.util import softmax_to_argmax
@@ -44,8 +45,8 @@ def train_config():
     max_episode_len = 25            # timesteps per episodes
 
     # Agent Parameters
-    good_policy = 'magat'          # policy of "good" agents in env
-    adv_policy = 'magat'           # policy of adversary agents in env
+    good_policy = 'maddpg'          # policy of "good" agents in env
+    adv_policy = 'maddpg'           # policy of adversary agents in env
     # available agent: maddpg, matd3, magat
 
     # General Training Hyperparameters

@@ -42,16 +42,18 @@ class MADDPGAgent(object):
 
         update_target_network(self.policy.model, self.policy_target.model)
 
-    def update(self, obs_n, acts_n, critic):
+    def update(self, obs_n, acts_n, critic, train_step):
         # Train the policy.
         policy_loss = self.policy.train(obs_n, acts_n, critic)
         # Update target networks.
         self.update_target_networks(self.tau)
-        self.save(self.result_path)
+        self.save(self.result_path, train_step)
 
         return policy_loss
 
-    def save(self, fp):
+    def save(self, fp, train_step):
+        episode_model = int(train_step % 50000)
+        fp = fp + '/' + str(episode_model)
         tf.saved_model.save(self.policy.model, fp + '/policy')
 
     def load(self, fp):
@@ -220,4 +222,5 @@ class MADDPGCriticNetwork(object):
         tf.saved_model.save(self.model, fp + '/critic')
 
     def load(self, fp):
+        fp = fp + '/' + str(0)
         self.model = keras.models.load_model(fp + '/critic')

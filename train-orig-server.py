@@ -11,8 +11,9 @@ from typing import List
 import numpy as np
 import tensorflow as tf
 
-from agents import MADDPGAgent, MATD3Agent
+from agents import MATD3Agent
 from agents.magatserver import MAGATAgent
+from agents.maddpgserver import MADDPGAgent
 from agents.AbstractAgent import AbstractAgent
 from commons.loggerserver import RLLogger
 from commons.util import softmax_to_argmax
@@ -25,17 +26,18 @@ if tf.config.experimental.list_physical_devices('GPU'):
 
 def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
-    parser.add_argument("--exp-name", type=str, default='default', help="name of the experiment")
+    parser.add_argument("--exp-name", type=str, default='self-maddpg-4', help="name of the experiment")
 
     parser.add_argument("--display", action="store_true", default=False)
-    parser.add_argument("--restore_fp", action="store_true", default=None, help="path to restore models from")
+    parser.add_argument("--restore_fp", action="store_true", default=None,
+                        help="path to restore models from: e.g. 'results/maddpg/models/' ")
     parser.add_argument("--save-rate", type=int, default=10,
                         help="save model once every time this many episodes are completed")
     parser.add_argument("--update-rate", type=int, default=100,
                         help="update policy after each x steps")
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread_ivan", help="name of the scenario script")
-    parser.add_argument("--no-agents", type=int, default=5, help="number of agents")
+    parser.add_argument("--no-agents", type=int, default=4, help="number of agents")
     parser.add_argument("--no-adversaries", type=int, default=0, help="number of adversaries")
 
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
@@ -118,7 +120,8 @@ def train(exp_name, save_rate, display, restore_fp):
     if restore_fp is not None:
         print('Loading previous state...')
         for ag_idx, agent in enumerate(agents):
-            fp = os.path.join(restore_fp, 'agent_{}'.format(ag_idx))
+            loading_episode = 0
+            fp = os.path.join(restore_fp,  'ep{}'.format(loading_episode), 'agent_{}'.format(ag_idx))
             agent.load(fp)
 
     obs_n = env.reset()
@@ -157,7 +160,7 @@ def train(exp_name, save_rate, display, restore_fp):
         if done:
             obs_n = env.reset()
             episode_step = 0
-            logger.record_episode_end(agents)
+            logger.record_episode_end(agents, arglist.display)
 
         logger.train_step += 1
 
@@ -190,37 +193,37 @@ def get_agents(env, num_adversaries, good_policy, adv_policy, lr, batch_size,
     :returns List[AbstractAgent] returns a list of instantiated agents
     """
     agents = []
-    # for agent_idx in range(num_adversaries):
-    #     if adv_policy == 'maddpg':
-    #         agent = MADDPGAgent(env.observation_space, env.action_space, agent_idx, batch_size,
-    #                             buff_size,
-    #                             lr, num_layers,
-    #                             num_units, gamma, tau, priori_replay, alpha=alpha,
-    #                             max_step=num_episodes * max_episode_len, initial_beta=bet)
-    #     elif adv_policy == "magat":
-    #         agent = MAGATAgent(no_neighbors, env.observation_space, env.action_space, agent_idx, batch_size,
-    #                            buff_size,
-    #                            lr, num_layers,
-    #                            num_units, gamma, tau, priori_replay, alpha=alpha,
-    #                            max_step=num_episodes * max_episode_len, initial_beta=beta, logger=logger)
-    #     elif adv_policy == 'matd3':
-    #         agent = MATD3Agent(env.observation_space, env.action_space, agent_idx, batch_size,
-    #                            buff_size,
-    #                            lr, num_layers,
-    #                            num_units, gamma, tau, priori_replay, alpha=alpha,
-    #                            max_step=num_episodes * max_episode_len, initial_beta=beta,
-    #                            policy_update_freq=policy_update_rate,
-    #                            target_policy_smoothing_eps=critic_action_noise_stddev)
-    #     else:
-    #         raise RuntimeError('Invalid Class')
-    #     agents.append(agent)
+    for agent_idx in range(num_adversaries):
+        if adv_policy == 'maddpg':
+            agent = MADDPGAgent(env.observation_space, env.action_space, agent_idx, batch_size,
+                                buff_size,
+                                lr, num_layers,
+                                num_units, gamma, tau, priori_replay, alpha=alpha,
+                                max_step=num_episodes * max_episode_len, initial_beta=beta, logger=logger)
+        elif adv_policy == "magat":
+            agent = MAGATAgent(no_neighbors, env.observation_space, env.action_space, agent_idx, batch_size,
+                               buff_size,
+                               lr, num_layers,
+                               num_units, gamma, tau, priori_replay, alpha=alpha,
+                               max_step=num_episodes * max_episode_len, initial_beta=beta, logger=logger)
+        elif adv_policy == 'matd3':
+            agent = MATD3Agent(env.observation_space, env.action_space, agent_idx, batch_size,
+                               buff_size,
+                               lr, num_layers,
+                               num_units, gamma, tau, priori_replay, alpha=alpha,
+                               max_step=num_episodes * max_episode_len, initial_beta=beta,
+                               policy_update_freq=policy_update_rate,
+                               target_policy_smoothing_eps=critic_action_noise_stddev)
+        else:
+            raise RuntimeError('Invalid Class')
+        agents.append(agent)
     for agent_idx in range(num_adversaries, env.n):
         if good_policy == 'maddpg':
             agent = MADDPGAgent(env.observation_space, env.action_space, agent_idx, batch_size,
                                 buff_size,
                                 lr, num_layers,
                                 num_units, gamma, tau, priori_replay, alpha=alpha,
-                                max_step=num_episodes * max_episode_len, initial_beta=beta, )
+                                max_step=num_episodes * max_episode_len, initial_beta=beta, logger=logger)
         elif good_policy == "magat":
             agent = MAGATAgent(no_neighbors, env.observation_space, env.action_space, agent_idx, batch_size,
                                buff_size,
