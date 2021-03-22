@@ -43,7 +43,7 @@ def parse_args():
     # Model training parameters
     parser.add_argument("--no-neurons", type=int, default=32, help="number of neurons on the first gnn")
     parser.add_argument("--l2-reg", type=float, default=2.5e-4, help="kernel regularizer")
-    parser.add_argument("--temporal-mode", type=str, default="rnn", help="Attention or rnn")
+    parser.add_argument("--temporal-mode", type=str, default="Attention", help="Attention or rnn")
 
     # Q-learning training parameters
     parser.add_argument("--gamma", type=float, default=0.95, help="discount factor")
@@ -71,6 +71,7 @@ def graph_net(arglist):
             temporal_state = GRU(arglist.no_neurons)(I[i])
         elif arglist.temporal_mode.lower() == "attention":
             temporal_state = SelfAttention(activation=tf.keras.layers.LeakyReLU(alpha=0.1))(I[i])
+            temporal_state = Lambda(lambda x: x[:, -1])(temporal_state)
         else:
             raise RuntimeError(
                 "Temporal Information Layer should be rnn or attention but %s found!" % arglist.temporal_mode)
@@ -86,7 +87,7 @@ def graph_net(arglist):
     V = tf.stack(outputs, axis=1)
     model = Model(I, V)
     model._name = "final_network"
-    # tf.keras.utils.plot_model(model, show_shapes=True)
+    tf.keras.utils.plot_model(model, show_shapes=True)
     return model
 
 
@@ -191,7 +192,11 @@ def main(arglist):
         actions = get_actions(predictions, epsilon)
 
         # Observe next state, reward and done value
-        new_obs_n, rew_n, done_n, _ = env.step(actions)
+        try:
+            new_obs_n, rew_n, done_n, _ = env.step(actions)
+        except:
+            print(actions)
+            RuntimeError('Actions error!')
         new_obs_n = u.refresh_history(np.copy(obs_n), new_obs_n)
         done = all(done_n) or terminal
         cooperative_reward = rew_n[0]

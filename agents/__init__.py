@@ -1,3 +1,3 @@
-from agents.maddpg import MADDPGAgent
+from agents.sacred_maddpg import MADDPGAgent
 from agents.matd3 import MATD3Agent
-from agents.magat import MAGATAgent
+from agents.sacred_magat import MAGATAgent

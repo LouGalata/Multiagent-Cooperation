@@ -4,16 +4,20 @@ from gym import Space
 from gym.spaces import Discrete
 from scipy.spatial import cKDTree
 from spektral.layers import GATConv
+from commons.OUNoise import OUNoise
 
 from agents.AbstractAgent import AbstractAgent
 from commons.util import space_n_to_shape_n, clip_by_local_norm
+from models.attention import SelfAttention
+from commons.weight_decay_optimizers import AdamW
+
 
 
 class MAGATAgent(AbstractAgent):
-    def __init__(self, history_size, no_neighbors, obs_space_n, act_space_n, agent_index, batch_size, buff_size, lr, num_layer,
+    def __init__(self, no_neighbors, obs_space_n, act_space_n, agent_index, batch_size, buff_size, lr, num_layer,
                  num_units, gamma,
                  tau, prioritized_replay=False, alpha=0.6, max_step=None, initial_beta=0.6, prioritized_replay_eps=1e-6,
-                 logger=None):
+                 wd=1e-5, logger=None, history_size=0, noise=0.0, temporal_mode='rnn'):
         """
         An object containing critic, actor and training functions for Multi-Agent DDPG.
         """
@@ -28,9 +32,8 @@ class MAGATAgent(AbstractAgent):
         self.no_features = obs_shape_n[0][0]
         self.no_actions = obs_shape_n[0][0]
         self.k_lst = list(range(self.no_neighbors + 2))[2:]
-        super().__init__(buff_size, history_size, obs_shape_n, act_shape_n, batch_size, prioritized_replay, alpha, max_step,
-                         initial_beta,
-                         prioritized_replay_eps=prioritized_replay_eps)
+        super().__init__(buff_size, obs_shape_n, act_shape_n, batch_size, prioritized_replay, alpha, max_step,
+                         initial_beta,  prioritized_replay_eps=prioritized_replay_eps, history_size=history_size)
 
         act_type = type(act_space_n[0])
         self.critic = MADDPGCriticNetwork(no_neighbors, num_layer, num_units, lr, obs_shape_n, act_shape_n, act_type,
@@ -39,11 +42,12 @@ class MAGATAgent(AbstractAgent):
                                                  act_type, agent_index)
         self.critic_target.model.set_weights(self.critic.model.get_weights())
 
-        self.policy = MADDPGPolicyNetwork(history_size, num_layer, num_units, lr, obs_shape_n, act_shape_n[agent_index], act_type, 1,
-                                          self.critic, agent_index)
-        self.policy_target = MADDPGPolicyNetwork(history_size, num_layer, num_units, lr, obs_shape_n, act_shape_n[agent_index],
-                                                 act_type, 1,
-                                                 self.critic, agent_index)
+        self.policy = MADDPGPolicyNetwork(history_size, num_layer, num_units, lr, obs_shape_n, act_shape_n[agent_index],
+                                          act_type, 1,
+                                          self.critic, agent_index, noise, temporal_mode)
+        self.policy_target = MADDPGPolicyNetwork(history_size, num_layer, num_units, lr, obs_shape_n,
+                                                 act_shape_n[agent_index],
+                                                 act_type, 1, self.critic, agent_index, noise, temporal_mode)
         self.policy_target.model.set_weights(self.policy.model.get_weights())
 
         self.batch_size = batch_size
@@ -65,6 +69,9 @@ class MAGATAgent(AbstractAgent):
 
     def preupdate(self):
         pass
+
+    def update_noise(self, reduction_noise):
+        self.policy.noise *= reduction_noise
 
     def update_target_networks(self, tau):
         """
@@ -170,8 +177,8 @@ class MAGATAgent(AbstractAgent):
 
 
 class MADDPGPolicyNetwork(object):
-    def __init__(self, history_size,num_layers, units_per_layer, lr, obs_n_shape, act_shape, act_type,
-                 gumbel_temperature, q_network, agent_index):
+    def __init__(self, history_size, num_layers, units_per_layer, lr, obs_n_shape, act_shape, act_type,
+                 gumbel_temperature, q_network, agent_index, noise, temporal_mode):
         """
         Implementation of the policy network, with optional gumbel softmax activation at the final layer.
         """
@@ -189,12 +196,21 @@ class MADDPGPolicyNetwork(object):
         self.q_network = q_network
         self.agent_index = agent_index
         self.clip_norm = 0.5
-
+        self.noise = noise
+        self.noise_mode = OUNoise(act_shape[0], scale=1.0)
+        self.temporal_mode = temporal_mode
         self.optimizer = tf.keras.optimizers.Adam(lr=self.lr)
 
         ### set up network structure
         self.obs_input = tf.keras.layers.Input(shape=(self.history_size, self.obs_n_shape[agent_index][0]))
-        self.temporal_state = tf.keras.layers.GRU(units_per_layer)
+        self.temporal_state = None
+        if self.temporal_mode.lower() == "rnn":
+            self.temporal_state = tf.keras.layers.GRU(units_per_layer)
+        elif self.temporal_mode.lower() == "attention":
+            self.temporal_state = SelfAttention(activation=tf.keras.layers.LeakyReLU(alpha=0.1))
+        else:
+            raise RuntimeError(
+                "Temporal Information Layer should be rnn or attention but %s found!" % self.temporal_mode)
 
         self.hidden_layers = []
         for idx in range(num_layers):
@@ -212,6 +228,8 @@ class MADDPGPolicyNetwork(object):
         # connect layers
         x = self.obs_input
         x = self.temporal_state(x)
+        if self.temporal_mode.lower() == "attention":
+            x = tf.keras.layers.Lambda(lambda x: x[:, -1])(x)
         for layer in self.hidden_layers:
             x = layer(x)
         x = self.output_layer(x)
@@ -235,6 +253,8 @@ class MADDPGPolicyNetwork(object):
         """
         x = obs
         x = self.temporal_state(x)
+        if self.temporal_mode.lower() == "attention":
+            x = tf.keras.layers.Lambda(lambda x: x[:, -1])(x)
         for idx in range(self.num_layers):
             x = self.hidden_layers[idx](x)
         outputs = self.output_layer(x)  # log probabilities of the gumbel softmax dist are the output of the network
@@ -244,7 +264,9 @@ class MADDPGPolicyNetwork(object):
     def get_action(self, obs):
         outputs = self.forward_pass(obs)
         if self.use_gumbel:
-            outputs = self.gumbel_softmax_sample(outputs)
+            # outputs = self.gumbel_softmax_sample(outputs)
+            outputs = outputs + self.noise * self.noise_mode.noise()
+            outputs = tf.clip_by_value(outputs, -1, 1)
         return outputs
 
     # @tf.function
@@ -257,7 +279,8 @@ class MADDPGPolicyNetwork(object):
             if self.use_gumbel:
                 logits = x
                 # log probabilities of the gumbel softmax dist are the output of the network
-                act_n[self.agent_index] = self.gumbel_softmax_sample(logits)
+                # act_n[self.agent_index] = self.gumbel_softmax_sample(logits)
+                act_n[self.agent_index] = self.gumbel_softmax_sample(logits) + self.noise * self.noise.noise()
             else:
                 act_n[self.agent_index] = x
             # q_value = self.q_network._predict_internal(obs_n + act_n)
@@ -303,6 +326,7 @@ class MADDPGCriticNetwork(object):
                                                  name="graph_input")
         self.adj = tf.keras.layers.Input(shape=(self.no_agents, self.no_agents), name="adj")
         # (2, (None, 15))
+
         self.gat = GATConv(
             units_per_layer,
             activation='elu',

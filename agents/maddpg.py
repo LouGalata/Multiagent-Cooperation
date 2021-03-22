@@ -1,21 +1,23 @@
 import numpy as np
 import tensorflow as tf
-
 from gym import Space
 from gym.spaces import Discrete
+from commons.OUNoise import OUNoise
 
 from agents.AbstractAgent import AbstractAgent
 from commons.util import space_n_to_shape_n, clip_by_local_norm
+from commons.weight_decay_optimizers import AdamW
 
 
 class MADDPGAgent(AbstractAgent):
     def __init__(self, obs_space_n, act_space_n, agent_index, batch_size, buff_size, lr, num_layer, num_units, gamma,
                  tau, prioritized_replay=False, alpha=0.6, max_step=None, initial_beta=0.6, prioritized_replay_eps=1e-6,
-                 _run=None):
+                 wd=1e-5, logger=None, noise=0.0):
         """
         An object containing critic, actor and training functions for Multi-Agent DDPG.
         """
-        self._run = _run
+
+        self.logger = logger
 
         assert isinstance(obs_space_n[0], Space)
         obs_shape_n = space_n_to_shape_n(obs_space_n)
@@ -24,20 +26,21 @@ class MADDPGAgent(AbstractAgent):
                          prioritized_replay_eps=prioritized_replay_eps)
 
         act_type = type(act_space_n[0])
-        self.critic = MADDPGCriticNetwork(num_layer, num_units, lr, obs_shape_n, act_shape_n, act_type, agent_index)
-        self.critic_target = MADDPGCriticNetwork(num_layer, num_units, lr, obs_shape_n, act_shape_n, act_type, agent_index)
+        self.critic = MADDPGCriticNetwork(num_layer, num_units, lr, obs_shape_n, act_shape_n, act_type, wd, agent_index)
+        self.critic_target = MADDPGCriticNetwork(num_layer, num_units, lr, obs_shape_n, act_shape_n, act_type, wd, agent_index)
         self.critic_target.model.set_weights(self.critic.model.get_weights())
 
         self.policy = MADDPGPolicyNetwork(num_layer, num_units, lr, obs_shape_n, act_shape_n[agent_index], act_type, 1,
-                                          self.critic, agent_index)
+                                          self.critic, agent_index, noise)
         self.policy_target = MADDPGPolicyNetwork(num_layer, num_units, lr, obs_shape_n, act_shape_n[agent_index], act_type, 1,
-                                                 self.critic, agent_index)
+                                                 self.critic, agent_index, noise)
         self.policy_target.model.set_weights(self.policy.model.get_weights())
 
         self.batch_size = batch_size
         self.agent_index = agent_index
         self.decay = gamma
         self.tau = tau
+
 
     def action(self, obs):
         """
@@ -53,6 +56,9 @@ class MADDPGAgent(AbstractAgent):
 
     def preupdate(self):
         pass
+
+    def update_noise(self, reduction_noise):
+        self.policy.noise *= reduction_noise
 
     def update_target_networks(self, tau):
         """
@@ -99,27 +105,37 @@ class MADDPGAgent(AbstractAgent):
         # Update target networks.
         self.update_target_networks(self.tau)
 
-        self._run.log_scalar('agent_{}.train.policy_loss'.format(self.agent_index), policy_loss.numpy(), step)
-        self._run.log_scalar('agent_{}.train.q_loss0'.format(self.agent_index), np.mean(td_loss), step)
-
+        # self._run.log_scalar('agent_{}.train.policy_loss'.format(self.agent_index), policy_loss.numpy(), step)
+        # self._run.log_scalar('agent_{}.train.q_loss0'.format(self.agent_index), np.mean(td_loss), step)
+        self.logger.save_logger("policy_loss", policy_loss.numpy(), step, self.agent_index)
+        self.logger.save_logger("critic_loss", np.mean(td_loss), step, self.agent_index)
         return [td_loss, policy_loss]
 
     def save(self, fp):
-        self.critic.model.save_weights(fp + 'critic.h5',)
-        self.critic_target.model.save_weights(fp + 'critic_target.h5')
-        self.policy.model.save_weights(fp + 'policy.h5')
-        self.policy_target.model.save_weights(fp + 'policy_target.h5')
+        tf.saved_model.save(self.critic.model, fp + 'critic')
+        tf.saved_model.save(self.critic_target.model, fp + 'critic_target')
+        tf.saved_model.save(self.policy.model, fp + 'policy')
+        tf.saved_model.save(self.policy_target.model, fp + 'policy_target')
+        # self.critic.model.save_weights(fp + 'critic.h5',)
+        # self.critic_target.model.save_weights(fp + 'critic_target.h5')
+        # self.policy.model.save_weights(fp + 'policy.h5')
+        # self.policy_target.model.save_weights(fp + 'policy_target.h5')
 
     def load(self, fp):
-        self.critic.model.load_weights(fp + 'critic.h5')
-        self.critic_target.model.load_weights(fp + 'critic_target.h5')
-        self.policy.model.load_weights(fp + 'policy.h5')
-        self.policy_target.model.load_weights(fp + 'policy_target.h5')
+        self.critic.model = tf.keras.models.load_model(fp + 'critic')
+        self.critic_target.model = tf.keras.models.load_model(fp + 'critic_target')
+        self.policy.model = tf.keras.models.load_model(fp + 'policy')
+        self.policy_target.model = tf.keras.models.load_model(fp + 'policy_target')
+
+        # self.critic.model.load_weights(fp + 'critic.h5')
+        # self.critic_target.model.load_weights(fp + 'critic_target.h5')
+        # self.policy.model.load_weights(fp + 'policy.h5')
+        # self.policy_target.model.load_weights(fp + 'policy_target.h5')
 
 
 class MADDPGPolicyNetwork(object):
     def __init__(self, num_layers, units_per_layer, lr, obs_n_shape, act_shape, act_type,
-                 gumbel_temperature, q_network, agent_index):
+                 gumbel_temperature, q_network, agent_index, noise):
         """
         Implementation of the policy network, with optional gumbel softmax activation at the final layer.
         """
@@ -136,9 +152,10 @@ class MADDPGPolicyNetwork(object):
         self.q_network = q_network
         self.agent_index = agent_index
         self.clip_norm = 0.5
+        self.noise = noise
+        self.noise_mode = OUNoise(act_shape[0], scale=1.0)
 
         self.optimizer = tf.keras.optimizers.Adam(lr=self.lr)
-
         ### set up network structure
         self.obs_input = tf.keras.layers.Input(shape=self.obs_n_shape[agent_index])
 
@@ -149,10 +166,10 @@ class MADDPGPolicyNetwork(object):
             self.hidden_layers.append(layer)
 
         if self.use_gumbel:
-            self.output_layer = tf.keras.layers.Dense(self.act_shape, activation='linear',
+            self.output_layer = tf.keras.layers.Dense(2, activation='linear',
                                                       name='ag{}pol_out{}'.format(agent_index, idx))
         else:
-            self.output_layer = tf.keras.layers.Dense(self.act_shape, activation='tanh',
+            self.output_layer = tf.keras.layers.Dense(2, activation='tanh',
                                                       name='ag{}pol_out{}'.format(agent_index, idx))
 
         # connect layers
@@ -188,7 +205,9 @@ class MADDPGPolicyNetwork(object):
     def get_action(self, obs):
         outputs = self.forward_pass(obs)
         if self.use_gumbel:
-            outputs = self.gumbel_softmax_sample(outputs)
+            # outputs = self.gumbel_softmax_sample(outputs)
+            outputs = outputs + self.noise * self.noise_mode.noise()
+            outputs = tf.clip_by_value(outputs, -1, 1)
         return outputs
 
     @tf.function
@@ -201,11 +220,13 @@ class MADDPGPolicyNetwork(object):
             if self.use_gumbel:
                 logits = x
                 # log probabilities of the gumbel softmax dist are the output of the network
-                act_n[self.agent_index] = self.gumbel_softmax_sample(logits)
+                # act_n[self.agent_index] = self.gumbel_softmax_sample(logits)
+                act_n[self.agent_index] = self.gumbel_softmax_sample(logits) + self.noise*self.noise.noise()
             else:
                 act_n[self.agent_index] = x
             q_value = self.q_network._predict_internal(obs_n + act_n)
-            policy_regularization = tf.math.reduce_mean(tf.math.square(x))
+            # policy_regularization = tf.math.reduce_mean(tf.math.square(x))
+            policy_regularization = tf.math.reduce_mean(x)
             loss = -tf.math.reduce_mean(q_value) + 1e-3 * policy_regularization  # gradient plus regularization
 
         gradients = tape.gradient(loss, self.model.trainable_variables)  # todo not sure if this really works
@@ -216,7 +237,7 @@ class MADDPGPolicyNetwork(object):
 
 
 class MADDPGCriticNetwork(object):
-    def __init__(self, num_hidden_layers, units_per_layer, lr, obs_n_shape, act_shape_n, act_type, agent_index):
+    def __init__(self, num_hidden_layers, units_per_layer, lr, obs_n_shape, act_shape_n, act_type, wd, agent_index):
         """
         Implementation of a critic to represent the Q-Values. Basically just a fully-connected
         regression ANN.
@@ -226,9 +247,10 @@ class MADDPGCriticNetwork(object):
         self.obs_shape_n = obs_n_shape
         self.act_shape_n = act_shape_n
         self.act_type = act_type
-
+        self.weight_decay = wd
         self.clip_norm = 0.5
-        self.optimizer = tf.keras.optimizers.Adam(lr=self.lr)
+        # self.optimizer = tf.keras.optimizers.Adam(lr=self.lr)
+        self.optimizer = AdamW(learning_rate=lr, weight_decay=wd)
 
         # set up layers
         # each agent's action and obs are treated as separate inputs

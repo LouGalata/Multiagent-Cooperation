@@ -4,7 +4,7 @@ import tensorflow as tf
 from gym import Space
 
 from agents.AbstractAgent import AbstractAgent
-from agents.maddpg import MADDPGCriticNetwork, MADDPGPolicyNetwork
+from agents.sacred_maddpg import MADDPGCriticNetwork, MADDPGPolicyNetwork
 from commons.util import space_n_to_shape_n
 
 

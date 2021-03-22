@@ -1,22 +1,25 @@
 import numpy as np
 import tensorflow as tf
-from spektral.layers import GATConv
-from scipy.spatial import cKDTree
 from gym import Space
 from gym.spaces import Discrete
+from scipy.spatial import cKDTree
+from spektral.layers import GATConv
 
 from agents.AbstractAgent import AbstractAgent
+from commons.OUNoise import OUNoise
 from commons.util import space_n_to_shape_n, clip_by_local_norm
+from commons.weight_decay_optimizers import AdamW
 
 
 class MAGATAgent(AbstractAgent):
-    def __init__(self, no_neighbors, obs_space_n, act_space_n, agent_index, batch_size, buff_size, lr, num_layer, num_units, gamma,
+    def __init__(self, no_neighbors, obs_space_n, act_space_n, agent_index, batch_size, buff_size, lr, num_layer,
+                 num_units, gamma,
                  tau, prioritized_replay=False, alpha=0.6, max_step=None, initial_beta=0.6, prioritized_replay_eps=1e-6,
-                 _run=None):
+                 wd=1e-5, logger=None, noise=0.0):
         """
         An object containing critic, actor and training functions for Multi-Agent DDPG.
         """
-        self._run = _run
+        self.logger = logger
 
         assert isinstance(obs_space_n[0], Space)
         obs_shape_n = space_n_to_shape_n(obs_space_n)
@@ -26,20 +29,23 @@ class MAGATAgent(AbstractAgent):
         self.no_agents = len(obs_shape_n)
         self.no_features = obs_shape_n[0][0]
         self.no_actions = obs_shape_n[0][0]
-
-        super().__init__(buff_size, obs_shape_n, act_shape_n, batch_size, prioritized_replay, alpha, max_step, initial_beta,
+        self.k_lst = list(range(self.no_neighbors + 2))[2:]
+        super().__init__(buff_size, obs_shape_n, act_shape_n, batch_size, prioritized_replay, alpha, max_step,
+                         initial_beta,
                          prioritized_replay_eps=prioritized_replay_eps)
 
         act_type = type(act_space_n[0])
-        self.k_lst = list(range(self.no_neighbors + 2))[2:]
-        self.critic = MADDPGCriticNetwork(no_neighbors, num_layer, num_units, lr, obs_shape_n, act_shape_n, act_type, agent_index)
-        self.critic_target = MADDPGCriticNetwork(no_neighbors, num_layer, num_units, lr, obs_shape_n, act_shape_n, act_type, agent_index)
+        self.critic = MADDPGCriticNetwork(no_neighbors, num_layer, num_units, lr, obs_shape_n, act_shape_n, act_type,
+                                          wd, agent_index)
+        self.critic_target = MADDPGCriticNetwork(no_neighbors, num_layer, num_units, lr, obs_shape_n, act_shape_n,
+                                                 act_type, wd, agent_index)
         self.critic_target.model.set_weights(self.critic.model.get_weights())
 
         self.policy = MADDPGPolicyNetwork(num_layer, num_units, lr, obs_shape_n, act_shape_n[agent_index], act_type, 1,
-                                          self.critic, agent_index)
-        self.policy_target = MADDPGPolicyNetwork(num_layer, num_units, lr, obs_shape_n, act_shape_n[agent_index], act_type, 1,
-                                                 self.critic, agent_index)
+                                          self.critic, agent_index, noise)
+        self.policy_target = MADDPGPolicyNetwork(num_layer, num_units, lr, obs_shape_n, act_shape_n[agent_index],
+                                                 act_type, 1,
+                                                 self.critic, agent_index, noise)
         self.policy_target.model.set_weights(self.policy.model.get_weights())
 
         self.batch_size = batch_size
@@ -62,10 +68,14 @@ class MAGATAgent(AbstractAgent):
     def preupdate(self):
         pass
 
+    def update_noise(self, reduction_noise):
+        self.policy.noise *= reduction_noise
+
     def update_target_networks(self, tau):
         """
         Implements the updates of the target networks, which slowly follow the real network.
         """
+
         def update_target_network(net: tf.keras.Model, target_net: tf.keras.Model):
             net_weights = np.array(net.get_weights())
             target_net_weights = np.array(target_net.get_weights())
@@ -75,7 +85,8 @@ class MAGATAgent(AbstractAgent):
         update_target_network(self.critic.model, self.critic_target.model)
         update_target_network(self.policy.model, self.policy_target.model)
 
-    def get_adj(self, arr, k_lst, no_agents):
+    @staticmethod
+    def get_adj(arr, k_lst, no_agents):
         """
         Take as input the new obs. In position 4 to k, there are the x and y coordinates of each agent
         Make an adjacency matrix, where each agent communicates with the k closest ones
@@ -96,14 +107,13 @@ class MAGATAgent(AbstractAgent):
         adj = GATConv.preprocess(adj).astype('f4')
         return adj
 
-
     def update(self, agents, step):
         """
         Update the agent, by first updating the critic and then the actor.
         Requires the list of the other agents as input, to determine the target actions.
         """
         assert agents[self.agent_index] is self
-
+        adjacency = None
         if self.prioritized_replay:
             obs_n, acts_n, rew_n, next_obs_n, done_n, weights, indices = \
                 self.replay_buffer.sample(self.batch_size, beta=self.beta_schedule.value(step))
@@ -112,7 +122,6 @@ class MAGATAgent(AbstractAgent):
             adjacency = [self.get_adj(obs, self.k_lst, self.no_agents) for obs in
                          np.swapaxes(obs_n, 1, 0)]
             adjacency = np.array(adjacency)  # shape: (batch_size, no_agents, no_agents)
-
 
         # Train the critic, using the target actions in the target critic network, to determine the
         # training target (i.e. target in MSE loss) for the critic update.
@@ -132,27 +141,37 @@ class MAGATAgent(AbstractAgent):
         # Update target networks.
         self.update_target_networks(self.tau)
 
-        self._run.log_scalar('agent_{}.train.policy_loss'.format(self.agent_index), policy_loss.numpy(), step)
-        self._run.log_scalar('agent_{}.train.q_loss0'.format(self.agent_index), np.mean(td_loss), step)
-
+        self.logger.save_logger("policy_loss", policy_loss.numpy(), step, self.agent_index)
+        self.logger.save_logger("critic_loss", np.mean(td_loss), step, self.agent_index)
+        # self.logger.log_scalar('agent_{}.train.policy_loss'.format(self.agent_index), policy_loss.numpy(), step)
+        # self.logger.log_scalar('agent_{}.train.q_loss0'.format(self.agent_index), np.mean(td_loss), step)
         return [td_loss, policy_loss]
 
     def save(self, fp):
-        self.critic.model.save_weights(fp + 'critic.h5',)
-        self.critic_target.model.save_weights(fp + 'critic_target.h5')
-        self.policy.model.save_weights(fp + 'policy.h5')
-        self.policy_target.model.save_weights(fp + 'policy_target.h5')
+        # self.critic.model.save_weights(fp + 'critic.h5', )
+        # self.critic_target.model.save_weights(fp + 'critic_target.h5')
+        # self.policy.model.save_weights(fp + 'policy.h5')
+        # self.policy_target.model.save_weights(fp + 'policy_target.h5')
+        tf.saved_model.save(self.critic.model, fp + 'critic')
+        tf.saved_model.save(self.critic_target.model, fp + 'critic_target')
+        tf.saved_model.save(self.policy.model, fp + 'policy')
+        tf.saved_model.save(self.policy_target.model, fp + 'policy_target')
 
     def load(self, fp):
-        self.critic.model.load_weights(fp + 'critic.h5')
-        self.critic_target.model.load_weights(fp + 'critic_target.h5')
-        self.policy.model.load_weights(fp + 'policy.h5')
-        self.policy_target.model.load_weights(fp + 'policy_target.h5')
+        self.critic.model = tf.keras.models.load_model(fp + 'critic')
+        self.critic_target.model = tf.keras.models.load_model(fp + 'critic_target')
+        self.policy.model = tf.keras.models.load_model(fp + 'policy')
+        self.policy_target.model = tf.keras.models.load_model(fp + 'policy_target')
+
+        # self.critic.model.load_weights(fp + 'critic.h5')
+        # self.critic_target.model.load_weights(fp + 'critic_target.h5')
+        # self.policy.model.load_weights(fp + 'policy.h5')
+        # self.policy_target.model.load_weights(fp + 'policy_target.h5')
 
 
 class MADDPGPolicyNetwork(object):
     def __init__(self, num_layers, units_per_layer, lr, obs_n_shape, act_shape, act_type,
-                 gumbel_temperature, q_network, agent_index):
+                 gumbel_temperature, q_network, agent_index, noise):
         """
         Implementation of the policy network, with optional gumbel softmax activation at the final layer.
         """
@@ -169,7 +188,8 @@ class MADDPGPolicyNetwork(object):
         self.q_network = q_network
         self.agent_index = agent_index
         self.clip_norm = 0.5
-
+        self.noise = noise
+        self.noise_mode = OUNoise(act_shape[0], scale=1.0)
         self.optimizer = tf.keras.optimizers.Adam(lr=self.lr)
 
         ### set up network structure
@@ -221,7 +241,9 @@ class MADDPGPolicyNetwork(object):
     def get_action(self, obs):
         outputs = self.forward_pass(obs)
         if self.use_gumbel:
-            outputs = self.gumbel_softmax_sample(outputs)
+            # outputs = self.gumbel_softmax_sample(outputs)
+            outputs = outputs + self.noise * self.noise_mode.noise()
+            outputs = tf.clip_by_value(outputs, -1, 1)
         return outputs
 
     # @tf.function
@@ -234,7 +256,8 @@ class MADDPGPolicyNetwork(object):
             if self.use_gumbel:
                 logits = x
                 # log probabilities of the gumbel softmax dist are the output of the network
-                act_n[self.agent_index] = self.gumbel_softmax_sample(logits)
+                # act_n[self.agent_index] = self.gumbel_softmax_sample(logits)
+                act_n[self.agent_index] = self.gumbel_softmax_sample(logits) + self.noise * self.noise_mode.noise()
             else:
                 act_n[self.agent_index] = x
             # q_value = self.q_network._predict_internal(obs_n + act_n)
@@ -253,7 +276,8 @@ class MADDPGPolicyNetwork(object):
 
 
 class MADDPGCriticNetwork(object):
-    def __init__(self, no_neighbors, num_hidden_layers, units_per_layer, lr, obs_n_shape, act_shape_n, act_type, agent_index):
+    def __init__(self, no_neighbors, num_hidden_layers, units_per_layer, lr, obs_n_shape, act_shape_n, act_type,
+                 wd, agent_index):
         """
         Implementation of a critic to represent the Q-Values. Basically just a fully-connected
         regression ANN.
@@ -265,8 +289,8 @@ class MADDPGCriticNetwork(object):
         self.act_type = act_type
 
         self.clip_norm = 0.5
-        self.optimizer = tf.keras.optimizers.Adam(lr=self.lr)
-
+        # self.optimizer = tf.keras.optimizers.Adam(lr=self.lr)
+        self.optimizer = AdamW(learning_rate=lr, weight_decay=wd)
         self.no_neighbors = no_neighbors
         self.no_agents = len(self.obs_shape_n)
         self.no_features = self.obs_shape_n[0][0]
@@ -274,7 +298,8 @@ class MADDPGCriticNetwork(object):
         # GAT
         self.k_lst = list(range(self.no_neighbors + 2))[2:]
 
-        self.graph_input = tf.keras.layers.Input((self.no_agents, self.no_features + self.no_actions), name="graph_input")
+        self.graph_input = tf.keras.layers.Input((self.no_agents, self.no_features + self.no_actions),
+                                                 name="graph_input")
         self.adj = tf.keras.layers.Input(shape=(self.no_agents, self.no_agents), name="adj")
         # (2, (None, 15))
         self.gat = GATConv(
@@ -346,7 +371,6 @@ class MADDPGCriticNetwork(object):
         return self._predict_internal(concatenated_input, adjacency)
         # return self._predict_internal(obs_n + act_n)
 
-
     def _predict_internal(self, concatenated_input, adjacency):
         """
         Internal function, because concatenation can not be done in tf.function
@@ -367,7 +391,6 @@ class MADDPGCriticNetwork(object):
         concatenated_input = np.concatenate([obs_n, act_n], axis=-1)
         concatenated_input = np.swapaxes(concatenated_input, 1, 0)
         return self._train_step_internal(concatenated_input, adjacency, target_q)
-
 
     @tf.function
     def _train_step_internal(self, concatenated_input, adjacency, target_q):
