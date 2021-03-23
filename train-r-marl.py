@@ -15,7 +15,7 @@ import tensorflow as tf
 from agents.AbstractAgent import AbstractAgent
 from agents.rmaddpg import MADDPGAgent
 from agents.rmagat import MAGATAgent
-from commons.loggerserver import RLLogger
+from commons.logger import RLLogger
 from environments.multiagent.environment import MultiAgentEnv
 
 if tf.config.experimental.list_physical_devices('GPU'):
@@ -69,7 +69,6 @@ def parse_args():
     parser.add_argument("--use-gumbel", type=bool, default=True, help="Use Gumbel softmax")
     parser.add_argument("--noise", type=float, default=0.1, help="Add noise on actions")
     parser.add_argument("--noise-reduction", type=float, default=0.999, help="Noise decay on actions")
-
 
     parser.add_argument("--use-target-action", type=bool, default=True, help="use action from target network")
     parser.add_argument("--hard-max", type=bool, default=False, help="Only output one action")

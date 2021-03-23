@@ -12,7 +12,7 @@ import tensorflow as tf
 from sacred import Experiment
 from sacred.observers import FileStorageObserver
 
-from commons.logger import RLLogger
+from commons.sacred_logger import RLLogger
 from agents import MADDPGAgent, MATD3Agent, MAGATAgent
 
 from agents.AbstractAgent import AbstractAgent

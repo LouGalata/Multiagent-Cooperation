@@ -15,7 +15,7 @@ import tensorflow as tf
 from agents.AbstractAgent import AbstractAgent
 from agents.maddpg import MADDPGAgent
 from agents.magat import MAGATAgent
-from commons.loggerserver import RLLogger
+from commons.logger import RLLogger
 from commons.util import softmax_to_argmax
 from environments.multiagent.environment import MultiAgentEnv
 
@@ -30,7 +30,7 @@ def parse_args():
 
     parser.add_argument("--display", action="store_true", default=False)
     parser.add_argument("--restore_fp", action="store_true", default=None,
-                        help="path to restore models from: e.g. 'results/magat/models/'")
+                        help="path to restore models from: e.g. 'results/maddpg7/models/'")
     parser.add_argument("--save-rate", type=int, default=20,
                         help="save model once every time this many episodes are completed")
     parser.add_argument("--update-rate", type=int, default=200,
@@ -44,8 +44,8 @@ def parse_args():
     parser.add_argument("--no-adversaries", type=int, default=0, help="number of adversaries")
 
     # Policies available agent: maddpg, matd3, magat
-    parser.add_argument("--good-policy", type=str, default="magat", help="policy of good agents in env")
-    parser.add_argument("--adv-policy", type=str, default="magat", help="policy of adversary agents in env")
+    parser.add_argument("--good-policy", type=str, default="maddpg", help="policy of good agents in env")
+    parser.add_argument("--adv-policy", type=str, default="maddpg", help="policy of adversary agents in env")
 
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--no-episodes", type=int, default=30000, help="number of episodes")
@@ -104,7 +104,6 @@ def train(exp_name, save_rate, display, restore_fp):
                         arglist.lr, arglist.batch_size, arglist.buffer_size, arglist.no_neurons,
                         arglist.no_layers, arglist.gamma, arglist.tau, arglist.priori_replay,
                         arglist.alpha, arglist.no_episodes, arglist.max_episode_len, arglist.beta,
-                        arglist.critic_action_noise_stddev,
                         arglist.no_neighbors, logger, arglist.noise)
 
     # Load previous results, if necessary
@@ -160,7 +159,8 @@ def train(exp_name, save_rate, display, restore_fp):
         # policy updates
         train_cond = not display
         for agent in agents:
-            if train_cond and len(agent.replay_buffer) > arglist.batch_size * arglist.max_episode_len:
+            # if train_cond and len(agent.replay_buffer) > arglist.batch_size * arglist.max_episode_len:
+            if train_cond and len(agent.replay_buffer) > arglist.batch_size + 1:
                 if logger.train_step % arglist.update_rate == 0:  # only update every 100 steps
                     for _ in range(arglist.update_times):
                         q_loss, pol_loss = agent.update(agents, logger.train_step)
@@ -178,7 +178,7 @@ def train(exp_name, save_rate, display, restore_fp):
 
 def get_agents(env, num_adversaries, good_policy, adv_policy, lr, batch_size,
                buff_size, num_units, num_layers, gamma, tau, priori_replay, alpha, num_episodes,
-               max_episode_len, beta, critic_action_noise_stddev, no_neighbors, logger, noise
+               max_episode_len, beta, no_neighbors, logger, noise
                ) -> List[AbstractAgent]:
     """
     This function generates the agents for the environment. The parameters are meant to be filled
