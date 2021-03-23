@@ -189,7 +189,7 @@ class MADDPGPolicyNetwork(object):
         # connect layers
         x = self.obs_input
         x = self.temporal_state(x)
-        if self.lambda_state:
+        if self.temporal_mode.lower() == "attention":
             x = tf.keras.layers.Lambda(lambda x: x[:, -1])(x)
         for layer in self.hidden_layers:
             x = layer(x)
@@ -214,7 +214,7 @@ class MADDPGPolicyNetwork(object):
         """
         x = obs
         x = self.temporal_state(x)
-        if self.lambda_state:
+        if self.temporal_mode.lower() == "attention":
             x = tf.keras.layers.Lambda(lambda x: x[:, -1])(x)
         for idx in range(self.num_layers):
             x = self.hidden_layers[idx](x)
