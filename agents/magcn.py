@@ -3,7 +3,7 @@ import tensorflow as tf
 from gym import Space
 from gym.spaces import Discrete
 from scipy.spatial import cKDTree
-from spektral.layers import GATConv
+from spektral.layers import GCNConv
 
 from agents.AbstractAgent import AbstractAgent
 from commons.OUNoise import OUNoise
@@ -104,7 +104,7 @@ class MAGATAgent(AbstractAgent):
             # adjacency[cnt, ii] = 1.0
 
         # add self-loops and symmetric normalization
-        adj = GATConv.preprocess(adj).astype('f4')
+        adj = GCNConv.preprocess(adj).astype('f4')
         return adj
 
     def update(self, agents, step):
@@ -149,25 +149,25 @@ class MAGATAgent(AbstractAgent):
         return [td_loss, policy_loss]
 
     def save(self, fp):
-        self.critic.model.save_weights(fp + 'critic.h5', )
-        self.critic_target.model.save_weights(fp + 'critic_target.h5')
-        self.policy.model.save_weights(fp + 'policy.h5')
-        self.policy_target.model.save_weights(fp + 'policy_target.h5')
-        # tf.saved_model.save(self.critic.model, fp + 'critic')
-        # tf.saved_model.save(self.critic_target.model, fp + 'critic_target')
-        # tf.saved_model.save(self.policy.model, fp + 'policy')
-        # tf.saved_model.save(self.policy_target.model, fp + 'policy_target')
+        # self.critic.model.save_weights(fp + 'critic.h5', )
+        # self.critic_target.model.save_weights(fp + 'critic_target.h5')
+        # self.policy.model.save_weights(fp + 'policy.h5')
+        # self.policy_target.model.save_weights(fp + 'policy_target.h5')
+        tf.saved_model.save(self.critic.model, fp + 'critic')
+        tf.saved_model.save(self.critic_target.model, fp + 'critic_target')
+        tf.saved_model.save(self.policy.model, fp + 'policy')
+        tf.saved_model.save(self.policy_target.model, fp + 'policy_target')
 
     def load(self, fp):
-        # self.critic.model = tf.keras.models.load_model(fp + 'critic')
-        # self.critic_target.model = tf.keras.models.load_model(fp + 'critic_target')
-        # self.policy.model = tf.keras.models.load_model(fp + 'policy')
-        # self.policy_target.model = tf.keras.models.load_model(fp + 'policy_target')
+        self.critic.model = tf.keras.models.load_model(fp + 'critic')
+        self.critic_target.model = tf.keras.models.load_model(fp + 'critic_target')
+        self.policy.model = tf.keras.models.load_model(fp + 'policy')
+        self.policy_target.model = tf.keras.models.load_model(fp + 'policy_target')
 
-        self.critic.model.load_weights(fp + 'critic.h5')
-        self.critic_target.model.load_weights(fp + 'critic_target.h5')
-        self.policy.model.load_weights(fp + 'policy.h5')
-        self.policy_target.model.load_weights(fp + 'policy_target.h5')
+        # self.critic.model.load_weights(fp + 'critic.h5')
+        # self.critic_target.model.load_weights(fp + 'critic_target.h5')
+        # self.policy.model.load_weights(fp + 'policy.h5')
+        # self.policy_target.model.load_weights(fp + 'policy_target.h5')
 
 
 class MADDPGPolicyNetwork(object):
@@ -260,6 +260,7 @@ class MADDPGPolicyNetwork(object):
                 logits = x
                 # log probabilities of the gumbel softmax dist are the output of the network
                 act_n[self.agent_index] = self.gumbel_softmax_sample(logits)
+
             elif self.use_ounoise:
                 act_n[self.agent_index] = x + self.noise * self.noise_mode.noise()
                 act_n[self.agent_index] = tf.clip_by_value(act_n[self.agent_index], -1, 1)
@@ -307,13 +308,10 @@ class MADDPGCriticNetwork(object):
         self.graph_input = tf.keras.layers.Input((self.no_agents, self.no_features + self.no_actions),
                                                  name="graph_input")
         self.adj = tf.keras.layers.Input(shape=(self.no_agents, self.no_agents), name="adj")
-        # (2, (None, 15))
-        self.gat = GATConv(
-            units_per_layer,
-            activation='relu',
-            attn_heads=4,
-            concat_heads=True,
-        )([self.graph_input, self.adj])
+
+        self.gcn = GCNConv(units_per_layer, kernel_initializer=tf.keras.initializers.he_uniform(),
+                           activation=tf.keras.layers.LeakyReLU(alpha=0.1),
+                           use_bias=False)([self.graph_input, self.adj])
 
         self.hidden_layers = []
         for idx in range(2):
@@ -324,7 +322,7 @@ class MADDPGCriticNetwork(object):
 
         # Try ResNet Alternative
         # self.flatten = tf.keras.layers.Flatten()(self.gat)
-        self.concat = tf.keras.layers.Concatenate(axis=2)([self.graph_input, self.gat])
+        self.concat = tf.keras.layers.Concatenate(axis=2)([self.graph_input, self.gcn])
         self.flatten = tf.keras.layers.Flatten()(self.concat)
 
         x = self.flatten
@@ -339,7 +337,6 @@ class MADDPGCriticNetwork(object):
         # tf.keras.utils.plot_model(self.model, show_shapes=True)
         self.model.compile(self.optimizer, loss='mse')
 
-
     def predict(self, obs_n, act_n, adjacency):
         """
         Predict the value of the input.
@@ -350,11 +347,17 @@ class MADDPGCriticNetwork(object):
         concatenated_input = tf.concat([obs_n, act_n], axis=-1)
         concatenated_input = tf.transpose(concatenated_input, [1, 0, 2])
         return self._predict_internal(concatenated_input, adjacency)
+        # return self._predict_internal(obs_n + act_n)
 
     def _predict_internal(self, concatenated_input, adjacency):
         """
         Internal function, because concatenation can not be done in tf.function
         """
+        # x = self.input_concat_layer(concatenated_input)
+        # for idx in range(self.num_layers):
+        #     x = self.hidden_layers[idx](x)
+        # x = self.output_layer(x)
+        # return x
         x = self.model.predict([concatenated_input, adjacency])
         return x
 

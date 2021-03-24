@@ -17,7 +17,7 @@ class MAGATAgent(AbstractAgent):
     def __init__(self, no_neighbors, obs_space_n, act_space_n, agent_index, batch_size, buff_size, lr, num_layer,
                  num_units, gamma,
                  tau, prioritized_replay=False, alpha=0.6, max_step=None, initial_beta=0.6, prioritized_replay_eps=1e-6,
-                 wd=1e-5, logger=None, history_size=0, noise=0.0, temporal_mode='rnn'):
+                 logger=None, history_size=0, noise=0.0, use_ounoise=False, temporal_mode='rnn'):
         """
         An object containing critic, actor and training functions for Multi-Agent DDPG.
         """
@@ -44,10 +44,10 @@ class MAGATAgent(AbstractAgent):
 
         self.policy = MADDPGPolicyNetwork(history_size, num_layer, num_units, lr, obs_shape_n, act_shape_n[agent_index],
                                           act_type, 1,
-                                          self.critic, agent_index, noise, temporal_mode)
+                                          self.critic, agent_index, noise, use_ounoise, temporal_mode)
         self.policy_target = MADDPGPolicyNetwork(history_size, num_layer, num_units, lr, obs_shape_n,
                                                  act_shape_n[agent_index],
-                                                 act_type, 1, self.critic, agent_index, noise, temporal_mode)
+                                                 act_type, 1, self.critic, agent_index, noise, use_ounoise, temporal_mode)
         self.policy_target.model.set_weights(self.policy.model.get_weights())
 
         self.batch_size = batch_size
@@ -122,6 +122,7 @@ class MAGATAgent(AbstractAgent):
         else:
             obs_n, acts_n, rew_n, next_obs_n, done_n = self.replay_buffer.sample(self.batch_size)
 
+        self.update_noise(0.999)
         # Train the critic, using the target actions in the target critic network, to determine the
         # training target (i.e. target in MSE loss) for the critic update.
         target_act_next = [a.target_action(obs) for a, obs in zip(agents, next_obs_n)]
@@ -155,30 +156,30 @@ class MAGATAgent(AbstractAgent):
         return [td_loss, policy_loss]
 
     def save(self, fp):
-        # self.critic.model.save_weights(fp + 'critic.h5', )
-        # self.critic_target.model.save_weights(fp + 'critic_target.h5')
-        # self.policy.model.save_weights(fp + 'policy.h5')
-        # self.policy_target.model.save_weights(fp + 'policy_target.h5')
-        tf.saved_model.save(self.critic.model, fp + 'critic')
-        tf.saved_model.save(self.critic_target.model, fp + 'critic_target')
-        tf.saved_model.save(self.policy.model, fp + 'policy')
-        tf.saved_model.save(self.policy_target.model, fp + 'policy_target')
+        self.critic.model.save_weights(fp + 'critic.h5', )
+        self.critic_target.model.save_weights(fp + 'critic_target.h5')
+        self.policy.model.save_weights(fp + 'policy.h5')
+        self.policy_target.model.save_weights(fp + 'policy_target.h5')
+        # tf.saved_model.save(self.critic.model, fp + 'critic')
+        # tf.saved_model.save(self.critic_target.model, fp + 'critic_target')
+        # tf.saved_model.save(self.policy.model, fp + 'policy')
+        # tf.saved_model.save(self.policy_target.model, fp + 'policy_target')
 
     def load(self, fp):
-        self.critic.model = tf.keras.models.load_model(fp + 'critic')
-        self.critic_target.model = tf.keras.models.load_model(fp + 'critic_target')
-        self.policy.model = tf.keras.models.load_model(fp + 'policy')
-        self.policy_target.model = tf.keras.models.load_model(fp + 'policy_target')
+        # self.critic.model = tf.keras.models.load_model(fp + 'critic')
+        # self.critic_target.model = tf.keras.models.load_model(fp + 'critic_target')
+        # self.policy.model = tf.keras.models.load_model(fp + 'policy')
+        # self.policy_target.model = tf.keras.models.load_model(fp + 'policy_target')
 
-        # self.critic.model.load_weights(fp + 'critic.h5')
-        # self.critic_target.model.load_weights(fp + 'critic_target.h5')
-        # self.policy.model.load_weights(fp + 'policy.h5')
-        # self.policy_target.model.load_weights(fp + 'policy_target.h5')
+        self.critic.model.load_weights(fp + 'critic.h5')
+        self.critic_target.model.load_weights(fp + 'critic_target.h5')
+        self.policy.model.load_weights(fp + 'policy.h5')
+        self.policy_target.model.load_weights(fp + 'policy_target.h5')
 
 
 class MADDPGPolicyNetwork(object):
     def __init__(self, history_size, num_layers, units_per_layer, lr, obs_n_shape, act_shape, act_type,
-                 gumbel_temperature, q_network, agent_index, noise, temporal_mode):
+                 gumbel_temperature, q_network, agent_index, noise, use_ounoise, temporal_mode):
         """
         Implementation of the policy network, with optional gumbel softmax activation at the final layer.
         """
@@ -192,6 +193,7 @@ class MADDPGPolicyNetwork(object):
             self.use_gumbel = True
         else:
             self.use_gumbel = False
+        self.use_ounoise = use_ounoise
         self.gumbel_temperature = gumbel_temperature
         self.q_network = q_network
         self.agent_index = agent_index
@@ -264,7 +266,8 @@ class MADDPGPolicyNetwork(object):
     def get_action(self, obs):
         outputs = self.forward_pass(obs)
         if self.use_gumbel:
-            # outputs = self.gumbel_softmax_sample(outputs)
+            outputs = self.gumbel_softmax_sample(outputs)
+        elif self.use_ounoise:
             outputs = outputs + self.noise * self.noise_mode.noise()
             outputs = tf.clip_by_value(outputs, -1, 1)
         return outputs
@@ -279,8 +282,10 @@ class MADDPGPolicyNetwork(object):
             if self.use_gumbel:
                 logits = x
                 # log probabilities of the gumbel softmax dist are the output of the network
-                # act_n[self.agent_index] = self.gumbel_softmax_sample(logits)
-                act_n[self.agent_index] = self.gumbel_softmax_sample(logits) + self.noise * self.noise.noise()
+                act_n[self.agent_index] = self.gumbel_softmax_sample(logits)
+            elif self.use_ounoise:
+                act_n[self.agent_index] = x + self.noise * self.noise_mode.noise()
+                act_n[self.agent_index] = tf.clip_by_value(act_n[self.agent_index], -1, 1)
             else:
                 act_n[self.agent_index] = x
             # q_value = self.q_network._predict_internal(obs_n + act_n)
@@ -289,7 +294,8 @@ class MADDPGPolicyNetwork(object):
             concatenated_input = tf.transpose(concatenated_input, [1, 0, 2])
             q_value = self.q_network.model([concatenated_input, adjacency])
 
-            policy_regularization = tf.math.reduce_mean(tf.math.square(x))
+            # policy_regularization = tf.math.reduce_mean(tf.math.square(x))
+            policy_regularization = tf.math.reduce_mean(x)
             loss = -tf.math.reduce_mean(q_value) + 1e-3 * policy_regularization  # gradient plus regularization
 
         gradients = tape.gradient(loss, self.model.trainable_variables)  # todo not sure if this really works
@@ -313,7 +319,8 @@ class MADDPGCriticNetwork(object):
         self.act_type = act_type
 
         self.clip_norm = 0.5
-        self.optimizer = tf.keras.optimizers.Adam(lr=self.lr)
+        self.wd = 1e-5
+        self.optimizer = AdamW(learning_rate=lr, weight_decay=self.wd)
 
         self.no_neighbors = no_neighbors
         self.no_agents = len(self.obs_shape_n)
@@ -352,37 +359,7 @@ class MADDPGCriticNetwork(object):
 
         # tf.keras.utils.plot_model(self.model, show_shapes=True)
         self.model.compile(self.optimizer, loss='mse')
-        # set up layers
-        # each agent's action and obs are treated as separate inputs
-        # self.obs_input_n = []
-        # for idx, shape in enumerate(self.obs_shape_n):
-        #     self.obs_input_n.append(tf.keras.layers.Input(shape=shape, name='obs_in' + str(idx)))
-        #
-        # self.act_input_n = []
-        # for idx, shape in enumerate(self.act_shape_n):
-        #     self.act_input_n.append(tf.keras.layers.Input(shape=shape, name='act_in' + str(idx)))
-        #
-        # self.input_concat_layer = tf.keras.layers.Concatenate()
-        #
-        # self.hidden_layers = []
-        # for idx in range(num_hidden_layers):
-        #     layer = tf.keras.layers.Dense(units_per_layer, activation='relu',
-        #                                   name='ag{}crit_hid{}'.format(agent_index, idx))
-        #     self.hidden_layers.append(layer)
-        #
-        # self.output_layer = tf.keras.layers.Dense(1, activation='linear',
-        #                                           name='ag{}crit_out{}'.format(agent_index, idx))
-        #
-        # # connect layers
-        # x = self.input_concat_layer(self.obs_input_n + self.act_input_n)
-        # for idx in range(self.num_layers):
-        #     x = self.hidden_layers[idx](x)
-        # x = self.output_layer(x)
-        #
-        # self.model = tf.keras.Model(inputs=self.obs_input_n + self.act_input_n,  # list concatenation
-        #                             outputs=[x])
-        # # tf.keras.utils.plot_model(self.model, show_shapes=True)
-        # self.model.compile(self.optimizer, loss='mse')
+
 
     def predict(self, obs_n, act_n, adjacency):
         """
@@ -429,18 +406,5 @@ class MADDPGCriticNetwork(object):
         gradients = tape.gradient(loss, self.model.trainable_variables)
         local_clipped = clip_by_local_norm(gradients, self.clip_norm)
         self.optimizer.apply_gradients(zip(local_clipped, self.model.trainable_variables))
-        #
-        # with tf.GradientTape() as tape:
-        #     x = self.input_concat_layer(concatenated_input)
-        #     for idx in range(self.num_layers):
-        #         x = self.hidden_layers[idx](x)
-        #     q_pred = self.output_layer(x)
-        #     td_loss = tf.math.square(target_q - q_pred)
-        #     loss = tf.reduce_mean(td_loss * weights)
-        #
-        # gradients = tape.gradient(loss, self.model.trainable_variables)
-        #
-        # local_clipped = clip_by_local_norm(gradients, self.clip_norm)
-        # self.optimizer.apply_gradients(zip(local_clipped, self.model.trainable_variables))
 
         return td_loss

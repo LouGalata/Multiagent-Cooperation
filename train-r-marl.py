@@ -32,7 +32,7 @@ def parse_args():
                         help="path to restore models from: e.g. 'results/maddpg/models/' ")
     parser.add_argument("--save-rate", type=int, default=10,
                         help="save model once every time this many episodes are completed")
-    parser.add_argument("--update-rate", type=int, default=100,
+    parser.add_argument("--update-rate", type=int, default=30,
                         help="update policy after each x steps")
     parser.add_argument("--update-times", type=int, default=20,
                         help="Number of times we update the networks")
@@ -43,13 +43,13 @@ def parse_args():
     parser.add_argument("--no-adversaries", type=int, default=0, help="number of adversaries")
 
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
-    parser.add_argument("--no-episodes", type=int, default=30000, help="number of episodes")
+    parser.add_argument("--no-episodes", type=int, default=60000, help="number of episodes")
     parser.add_argument("--no-neighbors", type=int, default=2, help="number of neigbors to cooperate")
     parser.add_argument("--seed", type=int, default=1, help="seed")
 
     # Policies available agent: maddpg, matd3, magat
-    parser.add_argument("--good-policy", type=str, default="magat", help="policy of good agents in env")
-    parser.add_argument("--adv-policy", type=str, default="magat", help="policy of adversary agents in env")
+    parser.add_argument("--good-policy", type=str, default="maddpg", help="policy of good agents in env")
+    parser.add_argument("--adv-policy", type=str, default="maddpg", help="policy of adversary agents in env")
 
     # Experience Replay
     parser.add_argument("--buffer-size", type=int, default=1e6, help="maximum buffer capacity")
@@ -66,7 +66,7 @@ def parse_args():
     parser.add_argument("--alpha", type=float, default=0.6, help="alpha value (weights prioritization vs random)")
     parser.add_argument("--beta", type=float, default=0.5, help="beta value  (controls importance sampling)")
 
-    parser.add_argument("--use-gumbel", type=bool, default=True, help="Use Gumbel softmax")
+    parser.add_argument("--use-ounoise", type=bool, default=True, help="Use Ornstein Uhlenbeck Process")
     parser.add_argument("--noise", type=float, default=0.1, help="Add noise on actions")
     parser.add_argument("--noise-reduction", type=float, default=0.999, help="Noise decay on actions")
 
@@ -74,7 +74,7 @@ def parse_args():
     parser.add_argument("--hard-max", type=bool, default=False, help="Only output one action")
 
     parser.add_argument("--temporal-mode", type=str, default="Attention", help="Attention or rnn")
-    parser.add_argument("--history-size", type=int, default=3,
+    parser.add_argument("--history-size", type=int, default=4,
                         help="number of timesteps/ history that will be used in the recurrent model")
     return parser.parse_args()
 
@@ -116,7 +116,7 @@ def train(exp_name, save_rate, display, restore_fp):
                         arglist.lr, arglist.batch_size, arglist.buffer_size, arglist.no_neurons,
                         arglist.no_layers, arglist.gamma, arglist.tau, arglist.priori_replay,
                         arglist.alpha, arglist.no_episodes, arglist.max_episode_len, arglist.beta,
-                        arglist.no_neighbors, logger, arglist.noise, arglist.temporal_mode)
+                        arglist.no_neighbors, logger, arglist.noise, arglist.use_ounoise, arglist.temporal_mode)
 
     # Load previous results, if necessary
     if restore_fp is not None:
@@ -168,10 +168,9 @@ def train(exp_name, save_rate, display, restore_fp):
 
         # policy updates
         train_cond = not display
-        # if train_cond and len(agents[0].replay_buffer) > arglist.batch_size * arglist.max_episode_len:
-        if train_cond and len(agents[0].replay_buffer) > arglist.batch_size + 1:
-            for agent in agents:
-                if logger.train_step % arglist.update_rate == 0:  # only update every 100 steps
+        for agent in agents:
+            if train_cond and len(agent.replay_buffer) > arglist.batch_size:
+                if len(logger.episode_rewards) % arglist.update_rate == 0:  # only update every 30 episodes
                     for _ in range(arglist.update_times):
                         q_loss, pol_loss = agent.update(agents, logger.train_step)
 
@@ -188,7 +187,7 @@ def train(exp_name, save_rate, display, restore_fp):
 
 def get_agents(env, num_adversaries, good_policy, adv_policy, history_size, lr, batch_size,
                buff_size, num_units, num_layers, gamma, tau, priori_replay, alpha, num_episodes,
-               max_episode_len, beta, no_neighbors, logger, noise, temporal_mode
+               max_episode_len, beta, no_neighbors, logger, noise, use_ounoise, temporal_mode
                ) -> List[AbstractAgent]:
     """
     This function generates the agents for the environment. The parameters are meant to be filled
@@ -204,14 +203,14 @@ def get_agents(env, num_adversaries, good_policy, adv_policy, history_size, lr, 
                                 lr, num_layers,
                                 num_units, gamma, tau, priori_replay, alpha=alpha,
                                 max_step=num_episodes * max_episode_len, initial_beta=beta, logger=logger,
-                                history_size=history_size, noise=noise, temporal_mode=temporal_mode)
+                                history_size=history_size, noise=noise, use_ounoise=use_ounoise, temporal_mode=temporal_mode)
         elif good_policy == "magat":
             agent = MAGATAgent(no_neighbors, env.observation_space, env.action_space, agent_idx, batch_size,
                                buff_size,
                                lr, num_layers,
                                num_units, gamma, tau, priori_replay, alpha=alpha,
                                max_step=num_episodes * max_episode_len, initial_beta=beta, logger=logger,
-                               history_size=history_size, noise=noise, temporal_mode=temporal_mode)
+                               history_size=history_size, noise=noise, use_ounoise=use_ounoise, temporal_mode=temporal_mode)
         else:
             raise RuntimeError('Invalid Class')
         agents.append(agent)

@@ -134,10 +134,8 @@ class RLLogger(object):
         self.t_last_print = time.time()
 
     def save_models(self, agents, episode):
-        episode = int(episode // 100)
         for idx, agent in enumerate(agents):
-            fp = os.path.join(self.model_path, 'ep{}'.format(episode))
-            agent.save(os.path.join(fp, 'agent_{}'.format(idx)))
+            agent.save(os.path.join(self.model_path, 'agent_{}'.format(idx)))
 
     def calculate_means(self):
         self.final_ep_rewards.append(np.mean(self.episode_rewards[-self.save_rate:-1]))

@@ -26,21 +26,21 @@ if tf.config.experimental.list_physical_devices('GPU'):
 
 def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
-    parser.add_argument("--exp-name", type=str, default='self-magat', help="name of the experiment")
+    parser.add_argument("--exp-name", type=str, default='debug', help="name of the experiment")
 
-    parser.add_argument("--display", action="store_true", default=False)
-    parser.add_argument("--restore_fp", action="store_true", default=None,
+    parser.add_argument("--display", action="store_true", default=True)
+    parser.add_argument("--restore_fp", action="store_true", default='results/maddpg4/models/',
                         help="path to restore models from: e.g. 'results/maddpg7/models/'")
     parser.add_argument("--save-rate", type=int, default=20,
                         help="save model once every time this many episodes are completed")
-    parser.add_argument("--update-rate", type=int, default=200,
+    parser.add_argument("--update-rate", type=int, default=30,
                         help="update policy after each x steps")
     parser.add_argument("--update-times", type=int, default=20,
                         help="Number of times we update the networks")
 
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread_ivan", help="name of the scenario script")
-    parser.add_argument("--no-agents", type=int, default=2, help="number of agents")
+    parser.add_argument("--no-agents", type=int, default=4, help="number of agents")
     parser.add_argument("--no-adversaries", type=int, default=0, help="number of adversaries")
 
     # Policies available agent: maddpg, matd3, magat
@@ -48,9 +48,9 @@ def parse_args():
     parser.add_argument("--adv-policy", type=str, default="maddpg", help="policy of adversary agents in env")
 
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
-    parser.add_argument("--no-episodes", type=int, default=30000, help="number of episodes")
+    parser.add_argument("--no-episodes", type=int, default=60000, help="number of episodes")
     parser.add_argument("--no-neighbors", type=int, default=2, help="number of neigbors to cooperate")
-    parser.add_argument("--seed", type=int, default=3, help="seed")
+    parser.add_argument("--seed", type=int, default=123, help="seed")
 
 
     # Experience Replay
@@ -59,7 +59,9 @@ def parse_args():
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
     parser.add_argument("--batch-size", type=int, default=512, help="number of episodes to optimize at the same time")
-    parser.add_argument("--no-neurons", type=int, default=128, help="number of neurons on the first gnn")
+    parser.add_argument("--no-critic-neurons", type=int, default=128, help="number of neurons on the first gnn")
+    parser.add_argument("--no-actor-neurons", type=int, default=64, help="number of neurons on the first gnn")
+
     parser.add_argument("--no-layers", type=int, default=2, help="number of hidden layers in critics and actors")
     parser.add_argument("--gamma", type=float, default=0.95, help="discount factor")
     parser.add_argument("--tau", type=float, default=0.01, help="smooth weights copy to target model")
@@ -68,7 +70,7 @@ def parse_args():
     parser.add_argument("--alpha", type=float, default=0.6, help="alpha value (weights prioritization vs random)")
     parser.add_argument("--beta", type=float, default=0.5, help="beta value  (controls importance sampling)")
 
-    parser.add_argument("--use-gumbel", type=bool, default=True, help="Use Gumbel softmax")
+    parser.add_argument("--use-ounoise", type=bool, default=False, help="Use Ornstein Uhlenbeck Process")
     parser.add_argument("--noise", type=float, default=0.1, help="Add noise on actions")
     parser.add_argument("--noise-reduction", type=float, default=0.999, help="Noise decay on actions")
 
@@ -101,20 +103,17 @@ def train(exp_name, save_rate, display, restore_fp):
     logger = RLLogger(exp_name, env.n, env.n_adversaries, save_rate, arglist)
     # Create agents
     agents = get_agents(env, env.n_adversaries, arglist.good_policy, arglist.adv_policy,
-                        arglist.lr, arglist.batch_size, arglist.buffer_size, arglist.no_neurons,
+                        arglist.lr, arglist.batch_size, arglist.buffer_size, arglist.no_critic_neurons, arglist.no_actor_neurons,
                         arglist.no_layers, arglist.gamma, arglist.tau, arglist.priori_replay,
                         arglist.alpha, arglist.no_episodes, arglist.max_episode_len, arglist.beta,
-                        arglist.no_neighbors, logger, arglist.noise)
+                        arglist.no_neighbors, logger, arglist.noise, arglist.use_ounoise)
 
     # Load previous results, if necessary
     if restore_fp is not None:
         print('Loading previous state...')
         for ag_idx, agent in enumerate(agents):
-            loading_episode = 0
-            # fp = os.path.join(restore_fp, 'agent_{}'.format(ag_idx))
-            fp = os.path.join(restore_fp,  'ep{}'.format(loading_episode), 'agent_{}'.format(ag_idx))
+            fp = os.path.join(restore_fp,  'agent_{}'.format(ag_idx))
             agent.load(fp)
-
     obs_n = env.reset()
 
     print('Starting iterations...')
@@ -142,7 +141,6 @@ def train(exp_name, save_rate, display, restore_fp):
         # collect experience
         for i, agent in enumerate(agents):
             agent.add_transition(obs_n, action_n, rew_n[i], new_obs_n, done)
-            agent.update_noise(arglist.noise_reduction)
         obs_n = new_obs_n
 
         for ag_idx, rew in enumerate(rew_n):
@@ -159,9 +157,8 @@ def train(exp_name, save_rate, display, restore_fp):
         # policy updates
         train_cond = not display
         for agent in agents:
-            # if train_cond and len(agent.replay_buffer) > arglist.batch_size * arglist.max_episode_len:
-            if train_cond and len(agent.replay_buffer) > arglist.batch_size + 1:
-                if logger.train_step % arglist.update_rate == 0:  # only update every 100 steps
+            if train_cond and len(agent.replay_buffer) > arglist.batch_size:
+                if len(logger.episode_rewards) % arglist.update_rate == 0:  # only update every 30 episodes
                     for _ in range(arglist.update_times):
                         q_loss, pol_loss = agent.update(agents, logger.train_step)
 
@@ -177,8 +174,8 @@ def train(exp_name, save_rate, display, restore_fp):
 
 
 def get_agents(env, num_adversaries, good_policy, adv_policy, lr, batch_size,
-               buff_size, num_units, num_layers, gamma, tau, priori_replay, alpha, num_episodes,
-               max_episode_len, beta, no_neighbors, logger, noise
+               buff_size, num_critic_neurons, num_actor_neurons, num_layers, gamma, tau, priori_replay, alpha, num_episodes,
+               max_episode_len, beta, no_neighbors, logger, noise, use_ounoise
                ) -> List[AbstractAgent]:
     """
     This function generates the agents for the environment. The parameters are meant to be filled
@@ -192,14 +189,14 @@ def get_agents(env, num_adversaries, good_policy, adv_policy, lr, batch_size,
             agent = MADDPGAgent(env.observation_space, env.action_space, agent_idx, batch_size,
                                 buff_size,
                                 lr, num_layers,
-                                num_units, gamma, tau, priori_replay, alpha=alpha,
-                                max_step=num_episodes * max_episode_len, initial_beta=beta, logger=logger, noise=noise)
+                                num_critic_neurons, num_actor_neurons, gamma, tau, priori_replay, alpha=alpha,
+                                max_step=num_episodes * max_episode_len, initial_beta=beta, logger=logger, noise=noise, use_ounoise=use_ounoise)
         elif good_policy == "magat":
             agent = MAGATAgent(no_neighbors, env.observation_space, env.action_space, agent_idx, batch_size,
                                buff_size,
                                lr, num_layers,
-                               num_units, gamma, tau, priori_replay, alpha=alpha,
-                               max_step=num_episodes * max_episode_len, initial_beta=beta, logger=logger, noise=noise)
+                               num_critic_neurons, num_actor_neurons, gamma, tau, priori_replay, alpha=alpha,
+                               max_step=num_episodes * max_episode_len, initial_beta=beta, logger=logger, noise=noise, use_ounoise=use_ounoise)
         else:
             raise RuntimeError('Invalid Class')
         agents.append(agent)

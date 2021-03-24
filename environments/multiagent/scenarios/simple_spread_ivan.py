@@ -8,7 +8,7 @@ class Scenario(BaseScenario):
     def make_world(self, no_agents=10):
         world = World()
 
-        world.dim_c = 2
+        world.dim_c = 0
         num_agents = no_agents
         num_landmarks = no_agents
         world.collaborative = True
