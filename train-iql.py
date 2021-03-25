@@ -139,24 +139,23 @@ def update_target_networks(policy_net, target_policy_net):
 def main():
     global no_actions, no_features, no_agents
     env = u.make_env(arglist.scenario, arglist.no_agents)
-    if not arglist.use_gumbel:
-        env.discrete_action_input = True
 
     obs_shape_n = env.observation_space
+    act_shape_n = env.action_space
+    act_shape_n = u.space_n_to_shape_n(act_shape_n)
     no_agents = env.n
     batch_size = arglist.batch_size
 
-    epsilon = arglist.epsilon
-    epsilon_decay = arglist.epsilon_decay
-    min_epsilon = arglist.min_epsilon
-    max_epsilon = arglist.max_epsilon
-
     u.create_seed(arglist.seed)
+    noise_mode = OUNoise(act_shape_n[0], scale=1.0)
+    noise = 0.1
+    reduction_noise = 0.999
+
     # Velocity.x Velocity.y Pos.x Pos.y {Land.Pos.x Land.Pos.y}*10 {Ent.Pos.x Ent.Pos.y}*9
     no_features = obs_shape_n[0].shape[0]
-    no_actions = env.action_space[0].n
+    no_actions = act_shape_n[0][0]
     model, model_t = __build_conf()
-    optimizer = tf.keras.optimizers.RMSprop(lr=arglist.lr)
+    optimizer = AdamW(learning_rate=arglist.lr, weight_decay=1e-5)
 
     # Results
     episode_rewards = [0.0]  # sum of rewards for all agents
@@ -177,7 +176,7 @@ def main():
     while True:
         episode_step += 1
         predictions = get_predictions(u.to_tensor(np.array(obs_n)), model)
-        actions = get_actions(predictions, epsilon, u)
+        actions = get_actions(predictions, noise, noise_mode)
         # Observe next state, reward and done value
         new_obs_n, rew_n, done_n, _ = env.step(actions)
         terminal = (episode_step >= arglist.max_episode_len)
@@ -190,18 +189,6 @@ def main():
 
         if done or terminal:
             obs_n = env.reset()
-            if arglist.decay_mode.lower() == "linear":
-                # straight line equation wrapper by max operation -> max(min_value,(-mx + b))
-                epsilon = np.amax((min_epsilon, -((
-                                                          max_epsilon - min_epsilon) * train_step / arglist.max_episode_len) / arglist.e_lin_decay + 1.0))
-            elif arglist.decay_mode.lower() == "exp":
-                # exponential's function Const(e^-t) wrapped by a min function
-                epsilon = np.amin((1, (min_epsilon + (max_epsilon - min_epsilon) * np.exp(
-                    -(train_step / arglist.max_episode_len - 1) / epsilon_decay))))
-            else:
-                epsilon = min_epsilon + (max_epsilon - min_epsilon) * np.exp(
-                    -epsilon_decay * train_step / arglist.max_episode_len)
-
             episode_step = 0
             episode_rewards.append(0)
 
@@ -215,41 +202,44 @@ def main():
             continue
 
         # Train the models
-        if train_step >= batch_size * arglist.max_episode_len and train_step % 100 == 0:
-            state, actions, rewards, new_state, dones = replay_buffer.sample(batch_size)
-            # Calculate TD-target. The Model.predict() method returns numpy() array without taping the forward pass.
-            target_q_values = model_t(reformat_input(new_state))
-            # Apply VDN to reduce the agent-dimension
-            target_q_tot = tf.reduce_sum(target_q_values, axis=1)
+        train_cond = not arglist.display
+        if train_cond and len(replay_buffer) > arglist.batch_size:
+            if len(episode_rewards) % arglist.update_rate == 0:  # only update every 30 episodes
+                for _ in range(arglist.update_times):
+                    state, actions, rewards, new_state, dones = replay_buffer.sample(batch_size)
+                    noise *= reduction_noise
 
-            # Apply max(Q) to obtain the TD-target
-            max_q_tot = tf.reduce_max(target_q_tot, axis=-1)
-            y = rewards + (1. - dones) * arglist.gamma * max_q_tot
-            with tf.GradientTape() as tape:
-                # Predictions
-                action_one_hot = tf.one_hot(tf.argmax(actions, axis=-1), no_actions, name='action_one_hot')
-                q_values = model(reformat_input(state))
-                # VDN summation
-                q_tot = tf.reduce_sum(q_values * action_one_hot, axis=1, name='q_acted')
-                pred = tf.reduce_sum(q_tot, axis=1)
-                if "huber" in arglist.loss_type:
-                    loss = tf.reduce_sum(u.huber_loss(pred, tf.stop_gradient(y)))
-                elif "mse" in arglist.loss_type:
-                    loss = tf.losses.mean_squared_error(pred, tf.stop_gradient(y))
-                else:
-                    raise RuntimeError(
-                        "Loss function should be either Huber or MSE. %s found!" % arglist.loss_type)
-                gradients = tape.gradient(loss, model.trainable_variables)
-                local_clipped = u.clip_by_local_norm(gradients, arglist.clip_gradients)
-            optimizer.apply_gradients(zip(local_clipped, model.trainable_variables))
-            tf.saved_model.save(model, result_path)
+                    target_q_values = model_t(reformat_input(new_state))
+                    # Apply VDN to reduce the agent-dimension
+                    target_q_tot = tf.reduce_sum(target_q_values, axis=1)
+
+                    # Apply max(Q) to obtain the TD-target
+                    max_q_tot = tf.reduce_max(target_q_tot, axis=-1)
+                    y = rewards + (1. - dones) * arglist.gamma * max_q_tot
+                    with tf.GradientTape() as tape:
+                        # Predictions
+                        action_one_hot = tf.one_hot(tf.argmax(actions, axis=-1), no_actions, name='action_one_hot')
+                        q_values = model(reformat_input(state))
+                        # VDN summation
+                        q_tot = tf.reduce_sum(q_values * action_one_hot, axis=1, name='q_acted')
+                        pred = tf.reduce_sum(q_tot, axis=1)
+                        if "huber" in arglist.loss_type:
+                            loss = tf.reduce_sum(u.huber_loss(pred, tf.stop_gradient(y)))
+                        elif "mse" in arglist.loss_type:
+                            loss = tf.losses.mean_squared_error(pred, tf.stop_gradient(y))
+                        else:
+                            raise RuntimeError(
+                                "Loss function should be either Huber or MSE. %s found!" % arglist.loss_type)
+                        gradients = tape.gradient(loss, model.trainable_variables)
+                        local_clipped = u.clip_by_local_norm(gradients, arglist.clip_gradients)
+                    optimizer.apply_gradients(zip(local_clipped, model.trainable_variables))
+                    tf.saved_model.save(model, result_path)
 
         # train target model
         update_target_networks(model, model_t)
 
         # display training output
-        if train_step >= batch_size * arglist.max_episode_len and terminal and (
-                len(episode_rewards) % arglist.save_rate == 0):
+        if train_step % arglist.save_rate == 0:
             # eval_reward = get_eval_reward(env, model)
             with open(res, "a+") as f:
                 mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
