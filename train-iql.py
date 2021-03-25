@@ -9,15 +9,17 @@ from keras.models import Model
 
 from buffers.replay_buffer_iql import ReplayBuffer
 from commons import util as u
+from commons.OUNoise import OUNoise
+from commons.weight_decay_optimizers import AdamW
 
 
 def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
-    parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
-    parser.add_argument("--no-agents", type=int, default=2, help="number of agents")
+    parser.add_argument("--scenario", type=str, default="simple_spread_ivan", help="name of the scenario script")
+    parser.add_argument("--no-agents", type=int, default=5, help="number of agents")
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
-    parser.add_argument("--no-episodes", type=int, default=30000, help="number of episodes")
+    parser.add_argument("--no-episodes", type=int, default=60000, help="number of episodes")
     parser.add_argument("--no-neighbors", type=int, default=2, help="number of neigbors to cooperate")
     parser.add_argument("--seed", type=int, default=1, help="seed")
 
@@ -26,21 +28,15 @@ def parse_args():
 
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
-    parser.add_argument("--batch-size", type=int, default=256, help="number of episodes to optimize at the same time")
+    parser.add_argument("--batch-size", type=int, default=512, help="number of episodes to optimize at the same time")
     parser.add_argument("--loss-type", type=str, default="huber", help="Loss function: huber or mse")
     parser.add_argument("--soft-update", type=bool, default=True, help="Mode of updating the target network")
     parser.add_argument("--clip-gradients", type=float, default=0.5, help="Norm of clipping gradients")
-    parser.add_argument("--use-gumbel", type=bool, default=True, help="Use Gumbel softmax")
+    parser.add_argument("--use-ounoise", type=bool, default=True, help="Use Ornstein Uhlenbeck Process")
 
-    parser.add_argument("--decay-mode", type=str, default="exp2", help="linear or exp")
-    parser.add_argument("--epsilon", type=float, default=1.0, help="epsilon exploration")
-    parser.add_argument("--epsilon-decay", type=float, default=0.0003, help="epsilon decay")
-    parser.add_argument("--min-epsilon", type=float, default=0.01, help="min epsilon")
-    parser.add_argument("--max-epsilon", type=float, default=1.0, help="max epsilon")
 
     # GNN training parameters
     parser.add_argument("--no-neurons", type=int, default=64, help="number of neurons on the first gnn")
-    parser.add_argument("--l2-reg", type=float, default=2.5e-4, help="kernel regularizer")
 
     # Q-learning training parameters
     parser.add_argument("--gamma", type=float, default=0.95, help="discount factor")
@@ -49,8 +45,12 @@ def parse_args():
     # Evaluation
     parser.add_argument("--display", action="store_true", default=False)
     parser.add_argument("--exp-name", type=str, default='self-iql2-v5', help="name of the experiment")
-    parser.add_argument("--save-rate", type=int, default=100,
+    parser.add_argument("--save-rate", type=int, default=10,
                         help="save model once every time this many episodes are completed")
+    parser.add_argument("--update-rate", type=int, default=30,
+                        help="update policy after each x steps")
+    parser.add_argument("--update-times", type=int, default=20,
+                        help="Number of times we update the networks")
     return parser.parse_args()
 
 
@@ -67,7 +67,7 @@ def IQL_net():
         med_dense = Dense(arglist.no_neurons,
                           kernel_initializer=tf.keras.initializers.he_uniform(),
                           activation=tf.keras.layers.LeakyReLU(alpha=0.1))(dense)
-        last_dense = Dense(no_actions, activation='linear', kernel_initializer=tf.keras.initializers.he_uniform())(
+        last_dense = Dense(no_actions, activation='tanh', kernel_initializer=tf.keras.initializers.he_uniform())(
             med_dense)
 
         outputs.append(last_dense)
@@ -92,20 +92,13 @@ def get_predictions(state, nets):
     return preds
 
 
-def get_actions(predictions, epsilon, u):
-    if arglist.use_gumbel:
-        actions = u.gumbel_softmax_sample(predictions)
-        actions = tf.squeeze(actions, axis=0)
-        return np.array(actions)
-    else:
-        best_actions = tf.argmax(predictions, axis=-1)[0]
-        actions = []
-        for i in range(no_agents):
-            if np.random.rand() < epsilon:
-                actions.append(np.random.randint(0, no_actions))
-            else:
-                actions.append(best_actions.numpy()[i])
-        return np.array(actions)
+def get_actions(predictions, noise, noise_mode):
+    outputs = predictions
+    if arglist.use_ounoise:
+        outputs += noise * noise_mode.noise()
+        outputs = tf.clip_by_value(outputs, -1, 1)
+    outputs = tf.squeeze(outputs, axis=0)
+    return np.array(outputs)
 
 
 def __build_conf():
@@ -123,8 +116,6 @@ def get_eval_reward(env, model):
         for i in range(arglist.max_episode_len):
             predictions = get_predictions(u.to_tensor(np.array(obs_n)), model)
             predictions = tf.squeeze(predictions, axis=0)
-            if not arglist.use_gumbel:
-                predictions = tf.argmax(predictions, axis=-1)
             # Observe next state, reward and done value
             new_obs_n, rew_n, done_n, _ = env.step(predictions.numpy())
             obs_n = new_obs_n
@@ -259,12 +250,12 @@ def main():
         # display training output
         if train_step >= batch_size * arglist.max_episode_len and terminal and (
                 len(episode_rewards) % arglist.save_rate == 0):
-            eval_reward = get_eval_reward(env, model)
+            # eval_reward = get_eval_reward(env, model)
             with open(res, "a+") as f:
                 mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
                             "train_episode_reward": np.round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
-                            "eval_episode_reward": np.round(np.mean(eval_reward), 3),
-                            "loss": round(loss.numpy(), 3),
+                            # "eval_episode_reward": np.round(np.mean(eval_reward), 3),
+                            # "loss": round(loss.numpy(), 3),
                             "time": round(time.time() - t_start, 3)}
                 print(mes_dict)
                 for item in list(mes_dict.values()):
