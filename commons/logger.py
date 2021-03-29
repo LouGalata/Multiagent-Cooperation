@@ -83,7 +83,7 @@ class RLLogger(object):
             if not testing:
                 self.save_models(agents, self.episode_count)
 
-    def save_logger(self, fp, value, step, ag_idx=None, td_loss=None):
+    def save_logger(self, fp, value, step, ag_idx=None):
         if fp == "episode_reward":
             with open(self.path_episode_reward, "a+") as f:
                 mes_dict = {"steps": step, "value": value}
@@ -96,7 +96,6 @@ class RLLogger(object):
             path = self.path_policy_losses[ag_idx]
             with open(path, "a+") as f:
                 mes_dict = {"steps": step, "value": value}
-                # print(mes_dict)
                 for item in list(mes_dict.values()):
                     f.write("%s\t" % item)
                 f.write("\n")
@@ -105,7 +104,6 @@ class RLLogger(object):
             path = self.path_critic_losses[ag_idx]
             with open(path, "a+") as f:
                 mes_dict = {"steps": step, "value": value}
-                # print(mes_dict)
                 for item in list(mes_dict.values()):
                     f.write("%s\t" % item)
                 f.write("\n")

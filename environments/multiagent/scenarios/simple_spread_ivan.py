@@ -5,8 +5,8 @@ from environments.multiagent.scenario import BaseScenario
 
 class Scenario(BaseScenario):
 
-    def make_world(self, no_agents=10):
-        world = World()
+    def make_world(self, no_agents=10, reward_const=10):
+        world = World(reward_const)
 
         world.dim_c = 0
         num_agents = no_agents
@@ -78,7 +78,7 @@ class Scenario(BaseScenario):
             dists = [np.sqrt(np.sum(np.square(a.state.p_pos - l.state.p_pos))) for a in world.agents]
             rew -= min(dists)
             if min(dists) < 0.1:
-                rew += 10
+                rew += world.reward_const
         if agent.collide:
             for a in world.agents:
                 if a is agent: continue

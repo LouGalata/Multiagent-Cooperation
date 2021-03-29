@@ -46,6 +46,7 @@ def parse_args():
     parser.add_argument("--no-episodes", type=int, default=60000, help="number of episodes")
     parser.add_argument("--no-neighbors", type=int, default=2, help="number of neigbors to cooperate")
     parser.add_argument("--seed", type=int, default=1, help="seed")
+    parser.add_argument("--reward", type=int, default=5, help="reward added if agents is close to the landmark")
 
     # Policies available agent: maddpg, matd3, magat
     parser.add_argument("--good-policy", type=str, default="maddpg", help="policy of good agents in env")
@@ -90,7 +91,7 @@ def make_env(scenario_name) -> MultiAgentEnv:
     # load scenario from script
     scenario = scenarios.load(scenario_name + '.py').Scenario()
     # create world
-    world = scenario.make_world(no_agents=arglist.no_agents)
+    world = scenario.make_world(no_agents=arglist.no_agents, reward_const=arglist.reward)
     env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
     return env
 

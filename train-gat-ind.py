@@ -246,11 +246,11 @@ def main(arglist):
                                 # "eval_episode_reward": np.round(np.mean(eval_reward), 3),
                                 # "loss": round(loss.numpy(), 3),
                                 "time": round(time.time() - t_start, 3)}
-                print(mes_dict)
-                for item in list(mes_dict.values()):
-                    f.write("%s\t" % item)
-                f.write("\n")
-                f.close()
+                    print(mes_dict)
+                    for item in list(mes_dict.values()):
+                        f.write("%s\t" % item)
+                    f.write("\n")
+                    f.close()
             t_start = time.time()
 
         if arglist.soft_update:

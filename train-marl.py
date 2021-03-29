@@ -26,10 +26,10 @@ if tf.config.experimental.list_physical_devices('GPU'):
 
 def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
-    parser.add_argument("--exp-name", type=str, default='debug', help="name of the experiment")
+    parser.add_argument("--exp-name", type=str, default='test-c2a6d', help="name of the experiment")
 
     parser.add_argument("--display", action="store_true", default=True)
-    parser.add_argument("--restore_fp", action="store_true", default='results/maddpg4/models/',
+    parser.add_argument("--restore_fp", action="store_true", default='results/results/c2a6d/models/',
                         help="path to restore models from: e.g. 'results/maddpg7/models/'")
     parser.add_argument("--save-rate", type=int, default=20,
                         help="save model once every time this many episodes are completed")
@@ -40,7 +40,7 @@ def parse_args():
 
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread_ivan", help="name of the scenario script")
-    parser.add_argument("--no-agents", type=int, default=4, help="number of agents")
+    parser.add_argument("--no-agents", type=int, default=5, help="number of agents")
     parser.add_argument("--no-adversaries", type=int, default=0, help="number of adversaries")
 
     # Policies available agent: maddpg, matd3, magat
@@ -51,7 +51,7 @@ def parse_args():
     parser.add_argument("--no-episodes", type=int, default=60000, help="number of episodes")
     parser.add_argument("--no-neighbors", type=int, default=2, help="number of neigbors to cooperate")
     parser.add_argument("--seed", type=int, default=123, help="seed")
-
+    parser.add_argument("--reward", type=int, default=5, help="reward added if agents is close to the landmark")
 
     # Experience Replay
     parser.add_argument("--buffer-size", type=int, default=1e6, help="maximum buffer capacity")
@@ -59,7 +59,7 @@ def parse_args():
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
     parser.add_argument("--batch-size", type=int, default=512, help="number of episodes to optimize at the same time")
-    parser.add_argument("--no-critic-neurons", type=int, default=128, help="number of neurons on the first gnn")
+    parser.add_argument("--no-critic-neurons", type=int, default=256, help="number of neurons on the first gnn")
     parser.add_argument("--no-actor-neurons", type=int, default=64, help="number of neurons on the first gnn")
 
     parser.add_argument("--no-layers", type=int, default=2, help="number of hidden layers in critics and actors")
@@ -91,7 +91,7 @@ def make_env(scenario_name) -> MultiAgentEnv:
     # load scenario from script
     scenario = scenarios.load(scenario_name + '.py').Scenario()
     # create world
-    world = scenario.make_world(no_agents=arglist.no_agents)
+    world = scenario.make_world(no_agents=arglist.no_agents, reward_const=arglist.reward)
     env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
     return env
 
@@ -115,7 +115,6 @@ def train(exp_name, save_rate, display, restore_fp):
             fp = os.path.join(restore_fp,  'agent_{}'.format(ag_idx))
             agent.load(fp)
     obs_n = env.reset()
-
     print('Starting iterations...')
     while True:
         # get action
