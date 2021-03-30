@@ -13,7 +13,7 @@ from commons.weight_decay_optimizers import AdamW
 
 class MAGATAgent(AbstractAgent):
     def __init__(self, no_neighbors, obs_space_n, act_space_n, agent_index, batch_size, buff_size, lr, num_layer,
-                 num_critic_neurons, num_actor_neurons, gamma,
+                 num_critic_neurons, num_actor_neurons, num_gnn_neurons, gamma,
                  tau, prioritized_replay=False, alpha=0.6, max_step=None, initial_beta=0.6, prioritized_replay_eps=1e-6,
                  wd=1e-5, logger=None, noise=0.0, use_ounoise=False):
         """
@@ -35,9 +35,9 @@ class MAGATAgent(AbstractAgent):
                          prioritized_replay_eps=prioritized_replay_eps)
 
         act_type = type(act_space_n[0])
-        self.critic = MADDPGCriticNetwork(no_neighbors, num_layer, num_critic_neurons, lr, obs_shape_n, act_shape_n, act_type,
+        self.critic = MADDPGCriticNetwork(no_neighbors, num_layer, num_critic_neurons, num_gnn_neurons, lr, obs_shape_n, act_shape_n, act_type,
                                           wd, agent_index)
-        self.critic_target = MADDPGCriticNetwork(no_neighbors, num_layer, num_critic_neurons, lr, obs_shape_n, act_shape_n,
+        self.critic_target = MADDPGCriticNetwork(no_neighbors, num_layer, num_critic_neurons, num_gnn_neurons, lr, obs_shape_n, act_shape_n,
                                                  act_type, wd, agent_index)
         self.critic_target.model.set_weights(self.critic.model.get_weights())
 
@@ -282,7 +282,7 @@ class MADDPGPolicyNetwork(object):
 
 
 class MADDPGCriticNetwork(object):
-    def __init__(self, no_neighbors, num_hidden_layers, units_per_layer, lr, obs_n_shape, act_shape_n, act_type,
+    def __init__(self, no_neighbors, num_hidden_layers, units_per_layer, num_gnn_neurons, lr, obs_n_shape, act_shape_n, act_type,
                  wd, agent_index):
         """
         Implementation of a critic to represent the Q-Values. Basically just a fully-connected
@@ -309,7 +309,7 @@ class MADDPGCriticNetwork(object):
         self.adj = tf.keras.layers.Input(shape=(self.no_agents, self.no_agents), name="adj")
         # (2, (None, 15))
         self.gat = GATConv(
-            units_per_layer,
+            num_gnn_neurons,
             activation='relu',
             attn_heads=4,
             concat_heads=True,

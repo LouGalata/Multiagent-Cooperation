@@ -7,7 +7,7 @@ import tensorflow as tf
 
 
 class RLLogger(object):
-    def __init__(self, exp_name, n_agents, n_adversaries, save_rate, arglist):
+    def __init__(self, n_agents, n_adversaries, save_rate, arglist):
         '''
         Initializes a logger.
         This logger will take care of results, and debug info, but never the replay buffer.
@@ -22,8 +22,12 @@ class RLLogger(object):
         # while os.path.exists(os.path.join(save_dir, exp_name)):
         #     print('WARNING: EXPERIMENT ALREADY EXISTS. APPENDING TO  TRIAL_NAME.')
         #     exp_name = exp_name + '_i'
-        print(exp_name)
-        self.ex_path = os.path.join('results', str(exp_name))
+        print(arglist.exp_name)
+        # TODO remove this line for continue training
+        if arglist.restore_fp is not None:
+            self.ex_path = arglist.exp_name
+        else:
+            self.ex_path = os.path.join('results', str(arglist.exp_name))
         os.makedirs(self.ex_path, exist_ok=True)
         self.model_path = os.path.join(self.ex_path, 'models')
         os.makedirs(self.model_path, exist_ok=True)
@@ -86,7 +90,7 @@ class RLLogger(object):
     def save_logger(self, fp, value, step, ag_idx=None):
         if fp == "episode_reward":
             with open(self.path_episode_reward, "a+") as f:
-                mes_dict = {"steps": step, "value": value}
+                mes_dict = {"steps": step, "episodes": int((step + 1) / 25), "value": value}
                 # print(mes_dict)
                 for item in list(mes_dict.values()):
                     f.write("%s\t" % item)
@@ -95,7 +99,7 @@ class RLLogger(object):
         elif fp == "policy_loss":
             path = self.path_policy_losses[ag_idx]
             with open(path, "a+") as f:
-                mes_dict = {"steps": step, "value": value}
+                mes_dict = {"steps": step, "episodes": int((step + 1) / 25), "value": value}
                 for item in list(mes_dict.values()):
                     f.write("%s\t" % item)
                 f.write("\n")
@@ -103,7 +107,7 @@ class RLLogger(object):
         elif fp == "critic_loss":
             path = self.path_critic_losses[ag_idx]
             with open(path, "a+") as f:
-                mes_dict = {"steps": step, "value": value}
+                mes_dict = {"steps": step, "episodes": int((step + 1) / 25), "value": value}
                 for item in list(mes_dict.values()):
                     f.write("%s\t" % item)
                 f.write("\n")

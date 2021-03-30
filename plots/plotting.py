@@ -26,12 +26,14 @@ def plot_loss(*args):
 def plot_reward_eval(*args):
     fconcat = pd.DataFrame()
     for i in range(len(args)):
-        path = os.path.join(os.path.pardir, "results", args[i], args[i] + ".csv")
+        path = os.path.join(os.path.pardir, "evaluation", "maddpg", args[i], "episode_reward.csv")
 
         rew_name = args[i]
-        col_names = ['step', 'episode', 'train_reward', rew_name, 'loss', 'time']
-        f = pd.read_csv(path, '\t', names=col_names, index_col=False, skiprows=lambda x: x % 5 == 0)
-        fconcat = pd.concat([fconcat, f[rew_name]], axis=1)
+        col_names = ['step', 'episode', 'mean episode reward']
+        # f = pd.read_csv(path, '\t', names=col_names, index_col=False, skiprows=lambda x: x % 5 == 0)
+        f = pd.read_csv(path, '\t', names=col_names, index_col=False)
+
+        fconcat = pd.concat([fconcat, f['mean episode reward']], axis=1)
 
     plt.title("Reward")
     plt.xlabel('Episodes')
@@ -42,8 +44,8 @@ def plot_reward_eval(*args):
 
 
 if __name__ == '__main__':
-    exp_name1 = "iql2-m"
-    exp_name2 = "iql2s-m"
+    exp_name1 = "c2a6d"
+    exp_name2 = ""
 
-    plot_loss(exp_name1, exp_name2)
+    # plot_loss(exp_name1, exp_name2)
     plot_reward_eval(exp_name1, exp_name2)

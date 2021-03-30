@@ -8,6 +8,7 @@ import os
 import random
 import time
 from typing import List
+import pickle
 
 import numpy as np
 import tensorflow as tf
@@ -28,9 +29,9 @@ def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     parser.add_argument("--exp-name", type=str, default='test-c2a6d', help="name of the experiment")
 
-    parser.add_argument("--display", action="store_true", default=True)
-    parser.add_argument("--restore_fp", action="store_true", default='results/results/c2a6d/models/',
-                        help="path to restore models from: e.g. 'results/maddpg7/models/'")
+    parser.add_argument("--display", action="store_true", default=False)
+    parser.add_argument("--restore_fp", action="store_true", default='results/maddpg/128dd',
+                        help="path to restore models from: e.g. 'results/maddpg7'")
     parser.add_argument("--save-rate", type=int, default=20,
                         help="save model once every time this many episodes are completed")
     parser.add_argument("--update-rate", type=int, default=30,
@@ -59,8 +60,9 @@ def parse_args():
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
     parser.add_argument("--batch-size", type=int, default=512, help="number of episodes to optimize at the same time")
-    parser.add_argument("--no-critic-neurons", type=int, default=256, help="number of neurons on the first gnn")
-    parser.add_argument("--no-actor-neurons", type=int, default=64, help="number of neurons on the first gnn")
+    parser.add_argument("--no-critic-neurons", type=int, default=256, help="number of neurons on the critic net")
+    parser.add_argument("--no-actor-neurons", type=int, default=64, help="number of neurons on the actor net")
+    parser.add_argument("--no-gnn-neurons", type=int, default=64, help="number of neurons on the gnn")
 
     parser.add_argument("--no-layers", type=int, default=2, help="number of hidden layers in critics and actors")
     parser.add_argument("--gamma", type=float, default=0.95, help="discount factor")
@@ -70,7 +72,7 @@ def parse_args():
     parser.add_argument("--alpha", type=float, default=0.6, help="alpha value (weights prioritization vs random)")
     parser.add_argument("--beta", type=float, default=0.5, help="beta value  (controls importance sampling)")
 
-    parser.add_argument("--use-ounoise", type=bool, default=False, help="Use Ornstein Uhlenbeck Process")
+    parser.add_argument("--use-ounoise", type=bool, default=True, help="Use Ornstein Uhlenbeck Process")
     parser.add_argument("--noise", type=float, default=0.1, help="Add noise on actions")
     parser.add_argument("--noise-reduction", type=float, default=0.999, help="Noise decay on actions")
 
@@ -96,14 +98,30 @@ def make_env(scenario_name) -> MultiAgentEnv:
     return env
 
 
-def train(exp_name, save_rate, display, restore_fp):
+def train(display, restore_fp, arglist):
     # Create environment
+    if restore_fp is not None:
+        with open(os.path.join(restore_fp, 'args.pkl'), 'rb') as f:
+            arglist = pickle.load(f)
+            arglist.display = False
+            arglist.use_ounoise =False
+            arglist.save_rate = 10
+            arglist.restore_fp = True
+            temp = os.path.join(*(restore_fp.split(os.path.sep)[1:]))
+            arglist.exp_name = os.path.join('evaluation', temp)
+
+            # TODO: no_gnn_neurons
+            arglist.no_gnn_neurons = 128
+
+    restore_fp = os.path.join(restore_fp, 'models')
     env = make_env(arglist.scenario)
 
-    logger = RLLogger(exp_name, env.n, env.n_adversaries, save_rate, arglist)
+    logger = RLLogger(env.n, env.n_adversaries, arglist.save_rate, arglist)
     # Create agents
     agents = get_agents(env, env.n_adversaries, arglist.good_policy, arglist.adv_policy,
-                        arglist.lr, arglist.batch_size, arglist.buffer_size, arglist.no_critic_neurons, arglist.no_actor_neurons,
+                        arglist.lr, arglist.batch_size, arglist.buffer_size,
+                        arglist.no_critic_neurons,
+                        arglist.no_actor_neurons, arglist.no_gnn_neurons,
                         arglist.no_layers, arglist.gamma, arglist.tau, arglist.priori_replay,
                         arglist.alpha, arglist.no_episodes, arglist.max_episode_len, arglist.beta,
                         arglist.no_neighbors, logger, arglist.noise, arglist.use_ounoise)
@@ -155,14 +173,16 @@ def train(exp_name, save_rate, display, restore_fp):
 
         # policy updates
         train_cond = not display
-        for agent in agents:
-            if train_cond and len(agent.replay_buffer) > arglist.batch_size:
-                if len(logger.episode_rewards) % arglist.update_rate == 0:  # only update every 30 episodes
-                    for _ in range(arglist.update_times):
-                        q_loss, pol_loss = agent.update(agents, logger.train_step)
+        # TODO: remove this line for copntinue training
+        if restore_fp is None:
+            for agent in agents:
+                if train_cond and len(agent.replay_buffer) > arglist.batch_size:
+                    if len(logger.episode_rewards) % arglist.update_rate == 0:  # only update every 30 episodes
+                        for _ in range(arglist.update_times):
+                            q_loss, pol_loss = agent.update(agents, logger.train_step)
 
         # for displaying learned policies
-        if display:
+        if arglist.display:
             time.sleep(0.1)
             env.render()
 
@@ -173,7 +193,8 @@ def train(exp_name, save_rate, display, restore_fp):
 
 
 def get_agents(env, num_adversaries, good_policy, adv_policy, lr, batch_size,
-               buff_size, num_critic_neurons, num_actor_neurons, num_layers, gamma, tau, priori_replay, alpha, num_episodes,
+               buff_size, num_critic_neurons, num_actor_neurons, num_gnn_neurons, num_layers, gamma, tau,
+               priori_replay, alpha, num_episodes,
                max_episode_len, beta, no_neighbors, logger, noise, use_ounoise
                ) -> List[AbstractAgent]:
     """
@@ -194,7 +215,7 @@ def get_agents(env, num_adversaries, good_policy, adv_policy, lr, batch_size,
             agent = MAGATAgent(no_neighbors, env.observation_space, env.action_space, agent_idx, batch_size,
                                buff_size,
                                lr, num_layers,
-                               num_critic_neurons, num_actor_neurons, gamma, tau, priori_replay, alpha=alpha,
+                               num_critic_neurons, num_actor_neurons, num_gnn_neurons,gamma, tau, priori_replay, alpha=alpha,
                                max_step=num_episodes * max_episode_len, initial_beta=beta, logger=logger, noise=noise, use_ounoise=use_ounoise)
         else:
             raise RuntimeError('Invalid Class')
@@ -209,14 +230,14 @@ def create_seed(seed):
     tf.random.set_seed(seed)
 
 
-def main():
+def main(arglist):
     file_observer = os.path.join("results", arglist.exp_name)
     if not os.path.exists(file_observer):
         os.makedirs(file_observer)
-    train(arglist.exp_name, arglist.save_rate, arglist.display, arglist.restore_fp)
+    train(arglist.display, arglist.restore_fp, arglist)
 
 
 if __name__ == '__main__':
     arglist = parse_args()
     create_seed(arglist.seed)
-    main()
+    main(arglist)

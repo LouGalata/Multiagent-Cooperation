@@ -115,17 +115,6 @@ def get_predictions(graph, adj, net):
     return preds
 
 
-# def get_actions(predictions, epsilon):
-#     best_actions = tf.argmax(predictions, axis=-1)[0]
-#     actions = []
-#     for i in range(no_agents):
-#         if np.random.rand() < epsilon:
-#             actions.append(np.random.randint(0, no_actions))
-#         else:
-#             actions.append(best_actions.numpy()[i])
-#     return np.array(actions)
-
-
 def get_actions(predictions, noise, noise_mode):
     outputs = predictions
     if arglist.use_ounoise:
@@ -281,14 +270,13 @@ def main(arglist):
             model_t.set_weights(model.get_weights())
 
         # display training output
-        if train_step >= batch_size * arglist.max_episode_len and terminal and (
-                len(episode_rewards) % arglist.save_rate == 0):
-            eval_reward = get_eval_reward(env, model)
+        if train_step % arglist.save_rate == 0:
+            # eval_reward = get_eval_reward(env, model)
             with open(res, "a+") as f:
                 mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
                             "train_episode_reward": np.round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
-                            "eval_episode_reward": np.round(np.mean(eval_reward), 3),
-                            "loss": round(loss.numpy(), 3),
+                            # "eval_episode_reward": np.round(np.mean(eval_reward), 3),
+                            # "loss": round(loss.numpy(), 3),
                             "time": round(time.time() - t_start, 3)}
                 print(mes_dict)
                 for item in list(mes_dict.values()):
