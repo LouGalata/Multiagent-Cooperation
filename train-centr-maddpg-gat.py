@@ -1,7 +1,7 @@
 import argparse
 import os
 import time
-
+import pickle
 import numpy as np
 
 from agents.centralized_maddpg_gat import MADDPGAgent, MADDPGCriticNetwork
@@ -16,7 +16,7 @@ def parse_args():
     parser.add_argument("--exp-name", type=str, default='debug-centr-gat', help="name of the experiment")
 
     parser.add_argument("--display", action="store_true", default=False)
-    parser.add_argument("--restore_fp", action="store_true", default=None,
+    parser.add_argument("--restore_fp", action="store_true", default='results/centr-magat-c256a64',
                         help="path to restore models from: e.g. 'results/maddpg7/models/'")
 
     # Environment
@@ -75,6 +75,7 @@ def make_env(scenario_name) -> MultiAgentEnv:
     env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
     return env
 
+
 def get_agents(env, lr, num_layers, num_actor_neurons, tau, noise, use_ounoise, logger):
     agents = []
     for agent_idx in range(arglist.no_agents):
@@ -95,11 +96,26 @@ def update_target_networks(critic_net, target_critic_net):
     update_critic_network(critic_net, target_critic_net)
 
 
-def main():
+def main(display, restore_fp, arglist):
     no_agents = arglist.no_agents
     u.create_seed(arglist.seed)
     env = make_env(arglist.scenario)
-    logger = RLLogger(arglist.exp_name, env.n, env.n_adversaries, arglist.save_rate, arglist)
+
+    if restore_fp is not None:
+        with open(os.path.join(restore_fp, 'args.pkl'), 'rb') as f:
+            arglist = pickle.load(f)
+            arglist.display = False
+            arglist.use_ounoise =False
+            arglist.save_rate = 10
+            arglist.restore_fp = True
+            temp = os.path.join(*(restore_fp.split(os.path.sep)[1:]))
+            arglist.exp_name = os.path.join('evaluation', temp)
+
+            # TODO: no_gnn_neurons
+            arglist.no_gnn_neurons = arglist.no_critic_neurons
+
+        restore_fp = os.path.join(restore_fp, 'models')
+    logger = RLLogger(env.n, env.n_adversaries, arglist.save_rate, arglist)
 
     obs_shape_n = u.space_n_to_shape_n(env.observation_space)
     act_shape_n = u.space_n_to_shape_n(env.action_space)
@@ -124,13 +140,13 @@ def main():
                                           act_shape_n)  # Init Buffer
 
     # Load previous results if necessary
-    if arglist.restore_fp:
+    if restore_fp is not None:
         print('Loading previous state...')
         for ag_idx, agent in enumerate(agents):
-            fp = os.path.join(model_path, 'agent_{}'.format(ag_idx))
+            fp = os.path.join(restore_fp, 'agent_{}'.format(ag_idx))
             agent.load(fp)
-        critic.load(model_path + '/critic.h5')
-        critic_target.load(model_path + '/critic_target.h5')
+        critic.load(restore_fp + '/critic.h5')
+        critic_target.load(restore_fp + '/critic_target.h5')
 
     print('Starting iterations...')
     while True:
@@ -156,32 +172,35 @@ def main():
 
         logger.train_step += 1
 
-        train_cond = not arglist.display
-        if train_cond and len(replay_buffer) > arglist.batch_size:
-            if len(logger.episode_rewards) % arglist.update_rate == 0:  # only update every 30 episodes
-                for _ in range(arglist.update_times):
-                    # Sample: Shapes --> (no-agents, batch_size, features)
-                    state, actions, rewards, new_state, dones = replay_buffer.sample(arglist.batch_size)
-                    target_act_next = [a.target_action(obs) for a, obs in zip(agents, new_state)]
-                    adjacency = [u.get_adj(obs, k_lst, no_agents, is_gat=True) for obs in
-                                 np.swapaxes(state, 1, 0)]
-                    adjacency = np.array(adjacency)  # shape: (batch_size, no_agents, no_agents)
-
-                    target_q_next = critic_target.predict(new_state, target_act_next, adjacency)
-                    q_train_target = rewards + (1. - dones) * arglist.gamma * target_q_next
-
-                    loss, td_loss = critic.train_step(state, actions, adjacency, q_train_target)
-                    logger.save_logger("critic_loss", np.mean(td_loss), logger.train_step, 0)
-                    update_target_networks(critic, critic_target)
-                    critic.save(model_path + '/critic.h5')
-                    critic_target.save(model_path + '/critic_target.h5')
-                    for agent in agents:
-                        pol_loss = agent.update(state, actions, adjacency, critic, logger.train_step)
-
         # for displaying learned policies
         if arglist.display:
             time.sleep(0.1)
             env.render()
+
+        train_cond = not display
+        if restore_fp is None:
+            if train_cond and len(replay_buffer) > arglist.batch_size:
+                if logger.episode_count % arglist.update_rate == 0:  # only update every 30 episodes
+                    for _ in range(arglist.update_times):
+                        # Sample: Shapes --> (no-agents, batch_size, features)
+                        state, actions, rewards, new_state, dones = replay_buffer.sample(arglist.batch_size)
+                        target_act_next = [a.target_action(obs) for a, obs in zip(agents, new_state)]
+                        adjacency = [u.get_adj(obs, k_lst, no_agents, is_gat=True) for obs in
+                                     np.swapaxes(state, 1, 0)]
+                        adjacency = np.array(adjacency)  # shape: (batch_size, no_agents, no_agents)
+
+                        target_q_next = critic_target.predict(new_state, target_act_next, adjacency)
+                        q_train_target = rewards + (1. - dones) * arglist.gamma * target_q_next
+
+                        loss, td_loss = critic.train_step(state, actions, adjacency, q_train_target)
+                        logger.save_logger("critic_loss", np.mean(td_loss), logger.train_step, 0)
+                        update_target_networks(critic, critic_target)
+                        critic.save(model_path + '/critic.h5')
+                        critic_target.save(model_path + '/critic_target.h5')
+                        for agent in agents:
+                            pol_loss = agent.update(state, actions, adjacency, critic, logger.train_step)
+
+
 
         # saves logger outputs to a file similar to the way in the original MADDPG implementation
         if len(logger.episode_rewards) > arglist.no_episodes:
@@ -192,4 +211,4 @@ def main():
 if __name__ == '__main__':
     np.warnings.filterwarnings('ignore', category=np.VisibleDeprecationWarning)
     arglist = parse_args()
-    main()
+    main(arglist.display, arglist.restore_fp, arglist)

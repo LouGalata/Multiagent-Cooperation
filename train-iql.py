@@ -16,7 +16,7 @@ from commons.weight_decay_optimizers import AdamW
 def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
-    parser.add_argument("--scenario", type=str, default="simple_spread_ivan", help="name of the scenario script")
+    parser.add_argument("--scenario", type=str, default="simple_spread_ivan2", help="name of the scenario script")
     parser.add_argument("--no-agents", type=int, default=5, help="number of agents")
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--no-episodes", type=int, default=60000, help="number of episodes")
@@ -28,7 +28,7 @@ def parse_args():
 
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
-    parser.add_argument("--batch-size", type=int, default=512, help="number of episodes to optimize at the same time")
+    parser.add_argument("--batch-size", type=int, default=1024, help="number of episodes to optimize at the same time")
     parser.add_argument("--loss-type", type=str, default="huber", help="Loss function: huber or mse")
     parser.add_argument("--soft-update", type=bool, default=True, help="Mode of updating the target network")
     parser.add_argument("--clip-gradients", type=float, default=0.5, help="Norm of clipping gradients")
@@ -36,7 +36,7 @@ def parse_args():
 
 
     # GNN training parameters
-    parser.add_argument("--no-neurons", type=int, default=64, help="number of neurons on the first gnn")
+    parser.add_argument("--no-neurons", type=int, default=256, help="number of neurons on the first gnn")
 
     # Q-learning training parameters
     parser.add_argument("--gamma", type=float, default=0.95, help="discount factor")
@@ -204,7 +204,7 @@ def main():
         # Train the models
         train_cond = not arglist.display
         if train_cond and len(replay_buffer) > arglist.batch_size:
-            if len(episode_rewards) % arglist.update_rate == 0:  # only update every 30 episodes
+            if terminal and len(episode_rewards) % arglist.update_rate == 0:  # only update every 30 episodes
                 for _ in range(arglist.update_times):
                     state, actions, rewards, new_state, dones = replay_buffer.sample(batch_size)
                     noise *= reduction_noise

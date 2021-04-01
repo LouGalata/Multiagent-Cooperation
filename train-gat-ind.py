@@ -18,7 +18,7 @@ from commons.weight_decay_optimizers import AdamW
 def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
-    parser.add_argument("--scenario", type=str, default="simple_spread_ivan", help="name of the scenario script")
+    parser.add_argument("--scenario", type=str, default="simple_spread_ivan2", help="name of the scenario script")
     parser.add_argument("--no-agents", type=int, default=5, help="number of agents")
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--no-episodes", type=int, default=60000, help="number of episodes")
@@ -30,12 +30,11 @@ def parse_args():
 
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
-    parser.add_argument("--batch-size", type=int, default=512, help="number of episodes to optimize at the same time")
+    parser.add_argument("--batch-size", type=int, default=1024, help="number of episodes to optimize at the same time")
     parser.add_argument("--loss-type", type=str, default="huber", help="Loss function: huber or mse")
 
     # GNN training parameters
-    parser.add_argument("--no-neurons", type=int, default=128, help="number of neurons on the first gnn")
-    parser.add_argument("--l2-reg", type=float, default=2.5e-4, help="kernel regularizer")
+    parser.add_argument("--no-neurons", type=int, default=256, help="number of neurons on the first gnn")
 
     # Q-learning training parameters
     parser.add_argument("--gamma", type=float, default=0.95, help="discount factor")
@@ -151,8 +150,8 @@ def main(arglist):
     no_actions = act_shape_n[0][0]
 
     model, model_t = __build_conf()
-    optimizer = AdamW(learning_rate=arglist.lr, weight_decay=1e-5)
-
+    # optimizer = AdamW(learning_rate=arglist.lr, weight_decay=0.0)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=arglist.lr)
     # Results
     episode_rewards = [0.0]  # sum of rewards for all agents
     result_path = os.path.join("results", arglist.exp_name)
@@ -204,7 +203,7 @@ def main(arglist):
         # Train the models
         train_cond = not arglist.display
         if train_cond and len(replay_buffer) > arglist.batch_size:
-            if len(episode_rewards) % arglist.update_rate == 0:  # only update every 30 episodes
+            if terminal and len(episode_rewards) % arglist.update_rate == 0:  # only update every 30 episodes
                 for _ in range(arglist.update_times):
                     state, adj_n, actions, rewards, new_state, dones = replay_buffer.sample(batch_size)
                     noise *= reduction_noise

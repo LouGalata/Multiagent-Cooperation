@@ -19,7 +19,7 @@ from commons import util as u
 def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
-    parser.add_argument("--scenario", type=str, default="simple_spread_ivan", help="name of the scenario script")
+    parser.add_argument("--scenario", type=str, default="simple_spread_ivan2", help="name of the scenario script")
     parser.add_argument("--no-agents", type=int, default=4, help="number of agents")
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--no-episodes", type=int, default=30000, help="number of episodes")
@@ -32,14 +32,14 @@ def parse_args():
 
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
-    parser.add_argument("--batch-size", type=int, default=512, help="number of episodes to optimize at the same time")
+    parser.add_argument("--batch-size", type=int, default=1024, help="number of episodes to optimize at the same time")
     parser.add_argument("--loss-type", type=str, default="huber", help="Loss function: huber or mse")
     parser.add_argument("--soft-update", type=bool, default=True, help="Mode of updating the target network")
 
     parser.add_argument("--use-ounoise", type=bool, default=True, help="Use Ornstein Uhlenbeck Process")
 
     # GNN training parameters
-    parser.add_argument("--no-neurons", type=int, default=128, help="number of neurons on the first gnn")
+    parser.add_argument("--no-neurons", type=int, default=256, help="number of neurons on the first gnn")
 
     # Q-learning training parameters
     parser.add_argument("--gamma", type=float, default=0.95, help="discount factor")
@@ -48,7 +48,7 @@ def parse_args():
     # Evaluation
     parser.add_argument("--display", action="store_true", default=False)
     parser.add_argument("--exp-name", type=str, default='GAT-exp', help="name of the experiment")
-    parser.add_argument("--save-rate", type=int, default=50,
+    parser.add_argument("--save-rate", type=int, default=10,
                         help="save model once every time this many episodes are completed")
     parser.add_argument("--update-rate", type=int, default=30,
                         help="update policy after each x steps")
@@ -225,7 +225,7 @@ def main(arglist):
         # Train the models
         train_cond = not arglist.display
         if train_cond and len(replay_buffer) > arglist.batch_size:
-            if len(episode_rewards) % arglist.update_rate == 0:  # only update every 30 episodes
+            if terminal and len(episode_rewards) % arglist.update_rate == 0:  # only update every 30 episodes
                 for _ in range(arglist.update_times):
                     state, adj_n, actions, rewards, new_state, dones = replay_buffer.sample(batch_size)
                     noise *= reduction_noise
@@ -258,6 +258,22 @@ def main(arglist):
 
                     tf.saved_model.save(model, result_path)
 
+            # display training output
+            if train_step % arglist.save_rate == 0:
+                # eval_reward = get_eval_reward(env, model)
+                with open(res, "a+") as f:
+                    mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
+                                "train_episode_reward": np.round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
+                                # "eval_episode_reward": np.round(np.mean(eval_reward), 3),
+                                # "loss": round(loss.numpy(), 3),
+                                "time": round(time.time() - t_start, 3)}
+                    print(mes_dict)
+                    for item in list(mes_dict.values()):
+                        f.write("%s\t" % item)
+                    f.write("\n")
+                    f.close()
+            t_start = time.time()
+
         # train target model
         if arglist.soft_update:
             weights = model.get_weights()
@@ -269,21 +285,6 @@ def main(arglist):
         elif terminal and train_step % 200 == 0:
             model_t.set_weights(model.get_weights())
 
-        # display training output
-        if train_step % arglist.save_rate == 0:
-            # eval_reward = get_eval_reward(env, model)
-            with open(res, "a+") as f:
-                mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
-                            "train_episode_reward": np.round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
-                            # "eval_episode_reward": np.round(np.mean(eval_reward), 3),
-                            # "loss": round(loss.numpy(), 3),
-                            "time": round(time.time() - t_start, 3)}
-                print(mes_dict)
-                for item in list(mes_dict.values()):
-                    f.write("%s\t" % item)
-                f.write("\n")
-                f.close()
-        t_start = time.time()
 
 
 if __name__ == '__main__':

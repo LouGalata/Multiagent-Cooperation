@@ -29,10 +29,10 @@ def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     parser.add_argument("--exp-name", type=str, default='test-c2a6d', help="name of the experiment")
 
-    parser.add_argument("--display", action="store_true", default=False)
-    parser.add_argument("--restore_fp", action="store_true", default='results/maddpg/128dd',
+    parser.add_argument("--display", action="store_true", default=True)
+    parser.add_argument("--restore-fp",  type=str, default='results/maddpg/c2a1bd',
                         help="path to restore models from: e.g. 'results/maddpg7'")
-    parser.add_argument("--save-rate", type=int, default=20,
+    parser.add_argument("--save-rate", type=int, default=10,
                         help="save model once every time this many episodes are completed")
     parser.add_argument("--update-rate", type=int, default=30,
                         help="update policy after each x steps")
@@ -59,9 +59,9 @@ def parse_args():
 
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
-    parser.add_argument("--batch-size", type=int, default=512, help="number of episodes to optimize at the same time")
+    parser.add_argument("--batch-size", type=int, default=1024, help="number of episodes to optimize at the same time")
     parser.add_argument("--no-critic-neurons", type=int, default=256, help="number of neurons on the critic net")
-    parser.add_argument("--no-actor-neurons", type=int, default=64, help="number of neurons on the actor net")
+    parser.add_argument("--no-actor-neurons", type=int, default=128, help="number of neurons on the actor net")
     parser.add_argument("--no-gnn-neurons", type=int, default=64, help="number of neurons on the gnn")
 
     parser.add_argument("--no-layers", type=int, default=2, help="number of hidden layers in critics and actors")
@@ -103,7 +103,7 @@ def train(display, restore_fp, arglist):
     if restore_fp is not None:
         with open(os.path.join(restore_fp, 'args.pkl'), 'rb') as f:
             arglist = pickle.load(f)
-            arglist.display = False
+            arglist.display = True
             arglist.use_ounoise =False
             arglist.save_rate = 10
             arglist.restore_fp = True
@@ -111,9 +111,9 @@ def train(display, restore_fp, arglist):
             arglist.exp_name = os.path.join('evaluation', temp)
 
             # TODO: no_gnn_neurons
-            arglist.no_gnn_neurons = 128
+            arglist.no_gnn_neurons = arglist.no_critic_neurons
 
-    restore_fp = os.path.join(restore_fp, 'models')
+        restore_fp = os.path.join(restore_fp, 'models')
     env = make_env(arglist.scenario)
 
     logger = RLLogger(env.n, env.n_adversaries, arglist.save_rate, arglist)
@@ -173,11 +173,11 @@ def train(display, restore_fp, arglist):
 
         # policy updates
         train_cond = not display
-        # TODO: remove this line for copntinue training
+        # TODO: remove this line for continue training
         if restore_fp is None:
             for agent in agents:
                 if train_cond and len(agent.replay_buffer) > arglist.batch_size:
-                    if len(logger.episode_rewards) % arglist.update_rate == 0:  # only update every 30 episodes
+                    if terminal and len(logger.episode_count) % arglist.update_rate == 0:  # only update every 30 episodes
                         for _ in range(arglist.update_times):
                             q_loss, pol_loss = agent.update(agents, logger.train_step)
 

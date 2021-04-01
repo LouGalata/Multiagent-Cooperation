@@ -13,7 +13,7 @@ class MADDPGAgent(AbstractAgent):
     def __init__(self, obs_space_n, act_space_n, agent_index, batch_size, buff_size, lr, num_layer, num_critic_neurons,
                  num_actor_neurons, gamma, tau, prioritized_replay=False, alpha=0.6, max_step=None, initial_beta=0.6,
                  prioritized_replay_eps=1e-6,
-                 wd=1e-5, logger=None, noise=0.0, use_ounoise=False):
+                 wd=0.0, logger=None, noise=0.0, use_ounoise=False):
         """
         An object containing critic, actor and training functions for Multi-Agent DDPG.
         """
@@ -171,6 +171,7 @@ class MADDPGPolicyNetwork(object):
             layer = tf.keras.layers.Dense(units_per_layer, activation='relu',
                                           name='ag{}pol_hid{}'.format(agent_index, idx))
             self.hidden_layers.append(layer)
+            units_per_layer /= 2
 
         if self.use_gumbel:
             self.output_layer = tf.keras.layers.Dense(2, activation='linear',
@@ -279,6 +280,7 @@ class MADDPGCriticNetwork(object):
             layer = tf.keras.layers.Dense(units_per_layer, activation='relu',
                                           name='ag{}crit_hid{}'.format(agent_index, idx))
             self.hidden_layers.append(layer)
+            units_per_layer /= 2
 
         self.output_layer = tf.keras.layers.Dense(1, activation='linear',
                                                   name='ag{}crit_out{}'.format(agent_index, idx))

@@ -206,7 +206,7 @@ def main(arglist):
         # Train the models
         train_cond = not arglist.display
         if train_cond and len(replay_buffer) > arglist.batch_size:
-            if len(episode_rewards) % arglist.update_rate == 0:  # only update every 30 episodes
+            if terminal and len(episode_rewards) % arglist.update_rate == 0:  # only update every 30 episodes
                 for _ in range(arglist.update_times):
 
                     state, adj_n, actions, rewards, new_state, dones = replay_buffer.sample(batch_size)
