@@ -17,11 +17,11 @@ def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread_ivan2", help="name of the scenario script")
-    parser.add_argument("--no-agents", type=int, default=5, help="number of agents")
+    parser.add_argument("--no-agents", type=int, default=4, help="number of agents")
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--no-episodes", type=int, default=60000, help="number of episodes")
     parser.add_argument("--no-neighbors", type=int, default=2, help="number of neigbors to cooperate")
-    parser.add_argument("--seed", type=int, default=1, help="seed")
+    parser.add_argument("--seed", type=int, default=3, help="seed")
 
     # Experience Replay
     parser.add_argument("--max-buffer-size", type=int, default=1e6, help="maximum buffer capacity")
@@ -44,7 +44,7 @@ def parse_args():
 
     # Evaluation
     parser.add_argument("--display", action="store_true", default=False)
-    parser.add_argument("--exp-name", type=str, default='self-iql2-v5', help="name of the experiment")
+    parser.add_argument("--exp-name", type=str, default='iql4', help="name of the experiment")
     parser.add_argument("--save-rate", type=int, default=10,
                         help="save model once every time this many episodes are completed")
     parser.add_argument("--update-rate", type=int, default=30,
@@ -154,12 +154,14 @@ def main():
     # Velocity.x Velocity.y Pos.x Pos.y {Land.Pos.x Land.Pos.y}*10 {Ent.Pos.x Ent.Pos.y}*9
     no_features = obs_shape_n[0].shape[0]
     no_actions = act_shape_n[0][0]
-    model, model_t = __build_conf()
+    # model, model_t = __build_conf()
+    model = tf.keras.models.load_model('results/mixing/iql4/')
+
     optimizer = AdamW(learning_rate=arglist.lr, weight_decay=1e-5)
 
     # Results
     episode_rewards = [0.0]  # sum of rewards for all agents
-    result_path = os.path.join("results", arglist.exp_name)
+    result_path = os.path.join("asymptotic", arglist.exp_name)
     res = os.path.join(result_path, "%s.csv" % arglist.exp_name)
 
     if not os.path.exists(result_path):
@@ -201,8 +203,22 @@ def main():
             env.render()
             continue
 
+        if terminal:
+            with open(res, "a+") as f:
+                mes_dict = {"episodes": len(episode_rewards),
+                            "train_episode_reward": np.round(np.mean(episode_rewards[-2]), 3),
+                            # "eval_episode_reward": np.round(np.mean(eval_reward), 3),
+                            # "loss": round(loss.numpy(), 3),
+                            "time": round(time.time() - t_start, 3)}
+                print(mes_dict)
+                for item in list(mes_dict.values()):
+                    f.write("%s\t" % item)
+                f.write("\n")
+                f.close()
+        t_start = time.time()
+
         # Train the models
-        train_cond = not arglist.display
+        train_cond = not arglist.display and terminal
         if train_cond and len(replay_buffer) > arglist.batch_size:
             if terminal and len(episode_rewards) % arglist.update_rate == 0:  # only update every 30 episodes
                 for _ in range(arglist.update_times):
@@ -236,23 +252,9 @@ def main():
                     tf.saved_model.save(model, result_path)
 
         # train target model
-        update_target_networks(model, model_t)
+        # if train_cond:
+        #     update_target_networks(model, model_t)
 
-        # display training output
-        if train_step % arglist.save_rate == 0:
-            # eval_reward = get_eval_reward(env, model)
-            with open(res, "a+") as f:
-                mes_dict = {"steps": train_step, "episodes": len(episode_rewards),
-                            "train_episode_reward": np.round(np.mean(episode_rewards[-arglist.save_rate:]), 3),
-                            # "eval_episode_reward": np.round(np.mean(eval_reward), 3),
-                            # "loss": round(loss.numpy(), 3),
-                            "time": round(time.time() - t_start, 3)}
-                print(mes_dict)
-                for item in list(mes_dict.values()):
-                    f.write("%s\t" % item)
-                f.write("\n")
-                f.close()
-        t_start = time.time()
 
 
 if __name__ == '__main__':

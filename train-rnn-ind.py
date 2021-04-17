@@ -210,8 +210,7 @@ def main(arglist):
             obs_n = u.reshape_state(obs_n, arglist.history_size)
             if arglist.decay_mode.lower() == "linear":
                 # straight line equation wrapper by max operation -> max(min_value,(-mx + b))
-                epsilon = np.amax((min_epsilon, -((
-                                                          max_epsilon - min_epsilon) * train_step / arglist.max_episode_len) / arglist.e_lin_decay + 1.0))
+                epsilon = np.amax((min_epsilon, -((max_epsilon - min_epsilon) * train_step / arglist.max_episode_len) / arglist.e_lin_decay + 1.0))
             elif arglist.decay_mode.lower() == "exp":
                 # exponential's function Const(e^-t) wrapped by a min function
                 epsilon = np.amin((1, (min_epsilon + (max_epsilon - min_epsilon) * np.exp(

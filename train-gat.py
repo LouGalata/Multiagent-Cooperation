@@ -18,7 +18,7 @@ def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread_ivan", help="name of the scenario script")
-    parser.add_argument("--no-agents", type=int, default=5, help="number of agents")
+    parser.add_argument("--no-agents", type=int, default=4, help="number of agents")
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--no-episodes", type=int, default=60000, help="number of episodes")
     parser.add_argument("--no-neighbors", type=int, default=2, help="number of neigbors to cooperate")

@@ -19,7 +19,7 @@ def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread_ivan2", help="name of the scenario script")
-    parser.add_argument("--no-agents", type=int, default=5, help="number of agents")
+    parser.add_argument("--no-agents", type=int, default=4, help="number of agents")
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--no-episodes", type=int, default=60000, help="number of episodes")
     parser.add_argument("--no-neighbors", type=int, default=2, help="number of neigbors to cooperate")
@@ -43,7 +43,7 @@ def parse_args():
     parser.add_argument("--use-ounoise", type=bool, default=True, help="Use Ornstein Uhlenbeck Process")
     # Evaluation
     parser.add_argument("--display", action="store_true", default=False)
-    parser.add_argument("--exp-name", type=str, default='self-igat5', help="name of the experiment")
+    parser.add_argument("--exp-name", type=str, default='igat4', help="name of the experiment")
     parser.add_argument("--save-rate", type=int, default=10,
                         help="save model once every time this many episodes are completed")
     parser.add_argument("--update-rate", type=int, default=30,
@@ -149,12 +149,13 @@ def main(arglist):
     no_features = obs_shape_n[0].shape[0]
     no_actions = act_shape_n[0][0]
 
-    model, model_t = __build_conf()
+    # model, model_t = __build_conf()
+    model = tf.keras.models.load_model('results/mixing/igat4/')
     # optimizer = AdamW(learning_rate=arglist.lr, weight_decay=0.0)
     optimizer = tf.keras.optimizers.Adam(learning_rate=arglist.lr)
     # Results
     episode_rewards = [0.0]  # sum of rewards for all agents
-    result_path = os.path.join("results", arglist.exp_name)
+    result_path = os.path.join("asymptotic", arglist.exp_name)
     res = os.path.join(result_path, "%s.csv" % arglist.exp_name)
     if not os.path.exists(result_path):
         os.makedirs(result_path)
@@ -200,8 +201,22 @@ def main(arglist):
             env.render()
             continue
 
+        if terminal:
+            with open(res, "a+") as f:
+                mes_dict = {"episodes": len(episode_rewards),
+                            "train_episode_reward": np.round(np.mean(episode_rewards[-2]), 3),
+                            # "eval_episode_reward": np.round(np.mean(eval_reward), 3),
+                            # "loss": round(loss.numpy(), 3),
+                            "time": round(time.time() - t_start, 3)}
+                print(mes_dict)
+                for item in list(mes_dict.values()):
+                    f.write("%s\t" % item)
+                f.write("\n")
+                f.close()
+        t_start = time.time()
+
         # Train the models
-        train_cond = not arglist.display
+        train_cond = not arglist.display and terminal
         if train_cond and len(replay_buffer) > arglist.batch_size:
             if terminal and len(episode_rewards) % arglist.update_rate == 0:  # only update every 30 episodes
                 for _ in range(arglist.update_times):
@@ -252,15 +267,14 @@ def main(arglist):
                     f.close()
             t_start = time.time()
 
-        if arglist.soft_update:
-            weights = model.get_weights()
-            target_weights = model_t.get_weights()
+        # if train_cond and arglist.soft_update:
+        #     weights = model.get_weights()
+        #     target_weights = model_t.get_weights()
+        #
+        #     for w in range(len(weights)):
+        #         target_weights[w] = arglist.tau * weights[w] + (1 - arglist.tau) * target_weights[w]
+        #     model_t.set_weights(target_weights)
 
-            for w in range(len(weights)):
-                target_weights[w] = arglist.tau * weights[w] + (1 - arglist.tau) * target_weights[w]
-            model_t.set_weights(target_weights)
-        elif train_step % 200 == 0:
-            model_t.set_weights(model.get_weights())
 
 
 if __name__ == '__main__':

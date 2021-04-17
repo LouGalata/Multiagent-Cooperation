@@ -174,7 +174,7 @@ class MADDPGPolicyNetwork(object):
             units_per_layer /= 2
 
         if self.use_gumbel:
-            self.output_layer = tf.keras.layers.Dense(2, activation='linear',
+            self.output_layer = tf.keras.layers.Dense(5, activation='linear',
                                                       name='ag{}pol_out{}'.format(agent_index, idx))
         else:
             self.output_layer = tf.keras.layers.Dense(2, activation='tanh',

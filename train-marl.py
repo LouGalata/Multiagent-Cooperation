@@ -27,10 +27,10 @@ if tf.config.experimental.list_physical_devices('GPU'):
 
 def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
-    parser.add_argument("--exp-name", type=str, default='test-c2a6d', help="name of the experiment")
+    parser.add_argument("--exp-name", type=str, default='old-env-maddpg', help="name of the experiment")
 
-    parser.add_argument("--display", action="store_true", default=True)
-    parser.add_argument("--restore-fp",  type=str, default='results/maddpg/c2a1bd',
+    parser.add_argument("--display", action="store_true", default=False)
+    parser.add_argument("--restore-fp",  type=str, default=None,
                         help="path to restore models from: e.g. 'results/maddpg7'")
     parser.add_argument("--save-rate", type=int, default=10,
                         help="save model once every time this many episodes are completed")
@@ -40,7 +40,7 @@ def parse_args():
                         help="Number of times we update the networks")
 
     # Environment
-    parser.add_argument("--scenario", type=str, default="simple_spread_ivan", help="name of the scenario script")
+    parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
     parser.add_argument("--no-agents", type=int, default=5, help="number of agents")
     parser.add_argument("--no-adversaries", type=int, default=0, help="number of adversaries")
 
@@ -51,8 +51,7 @@ def parse_args():
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--no-episodes", type=int, default=60000, help="number of episodes")
     parser.add_argument("--no-neighbors", type=int, default=2, help="number of neigbors to cooperate")
-    parser.add_argument("--seed", type=int, default=123, help="seed")
-    parser.add_argument("--reward", type=int, default=5, help="reward added if agents is close to the landmark")
+    parser.add_argument("--seed", type=int, default=3, help="seed")
 
     # Experience Replay
     parser.add_argument("--buffer-size", type=int, default=1e6, help="maximum buffer capacity")
@@ -76,7 +75,7 @@ def parse_args():
     parser.add_argument("--noise", type=float, default=0.1, help="Add noise on actions")
     parser.add_argument("--noise-reduction", type=float, default=0.999, help="Noise decay on actions")
 
-    parser.add_argument("--use-target-action", type=bool, default=True, help="use action from target network")
+    parser.add_argument("--use-target-action", type=bool, default=False, help="use action from target network")
     parser.add_argument("--hard-max", type=bool, default=False, help="Only output one action")
 
     return parser.parse_args()
@@ -93,7 +92,7 @@ def make_env(scenario_name) -> MultiAgentEnv:
     # load scenario from script
     scenario = scenarios.load(scenario_name + '.py').Scenario()
     # create world
-    world = scenario.make_world(no_agents=arglist.no_agents, reward_const=arglist.reward)
+    world = scenario.make_world(no_agents=arglist.no_agents)
     env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
     return env
 
@@ -109,8 +108,6 @@ def train(display, restore_fp, arglist):
             arglist.restore_fp = True
             temp = os.path.join(*(restore_fp.split(os.path.sep)[1:]))
             arglist.exp_name = os.path.join('evaluation', temp)
-
-            # TODO: no_gnn_neurons
             arglist.no_gnn_neurons = arglist.no_critic_neurons
 
         restore_fp = os.path.join(restore_fp, 'models')
