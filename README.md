@@ -1,18 +1,18 @@
 **Multiagent Cooperation**
 
 *Environment*
-1. Multiagent particle environment: https://github.com/openai/multiagent-particle-envs
-2. BATTLE (https://github.com/PKU-AI-Edge/DGN): in progress
+1. Multiagent particle environment: https://github.com/openai/multiagent-particle-envs 
 
 *Experiments*
 The configuring parameters are located on the top of each execution file. 
-1. train-iql.py: Independent q-learning with VDN mixing strategy
-3. train-gcn.py: Graph Convolutional Network with VDN 
-4. train-gat.py: Graph Attentional Network with VDN 
-5. train-gat-ind.py: Graph Attentional Network with VDN without shared weights 
-7. train-rnn-ind.py:  Independent q-learning with recurrence and VDN mixing strategy 
+1. train-iql.py: IQL with VDN mixing strategy
+3. train-gcn.py: IQL enhanced with Graph Convolutional Network with VDN 
+4. train-gat.py: IQL enhanced with Graph Attentional Network with VDN 
+5. train-gat-ind.py: IQL enhanced with Graph Attentional Network with VDN without shared weights 
+7. train-rnn-ind.py:  IQL with recurrence and VDN mixing strategy 
 8. train-dueling-dqn.py: Independent Dueling DQN with VDN mixing strategy
 9. train-maddpg.py: MADDPG
+10. train-centr-maddpg: MADDPG with one centralized critic
 
 *Buffers*
 1. replay_buffer.py: Save state, action, adjacency_matrix, next_action, reward, done
